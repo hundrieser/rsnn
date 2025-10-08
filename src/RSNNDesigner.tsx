@@ -119,6 +119,11 @@ type AnimationFrame = {
   edgeIds: string[];
 };
 
+interface RSNNDesignerProps {
+  isDarkMode?: boolean;
+  onToggleTheme?: () => void;
+}
+
 // ------------------------ Utilities ------------------------
 
 function uid(prefix = "id"): string {
@@ -535,7 +540,7 @@ function binaryIncludes(arr: number[], val: number): boolean {
 
 // ------------------------ Main Component ------------------------
 
-export default function RSNNDesigner() {
+export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNNDesignerProps) {
   const [neurons, setNeurons] = useState<Neuron[]>(() => [
     { id: uid("n"), label: "N1", role: "input", x: 120, y: 140, labelVisible: false, labelOffsetX: 0, labelOffsetY: DEFAULT_LABEL_OFFSET_Y },
     { id: uid("n"), label: "N2", role: "hidden", x: 360, y: 200, labelVisible: false, labelOffsetX: 0, labelOffsetY: DEFAULT_LABEL_OFFSET_Y },
@@ -601,6 +606,7 @@ export default function RSNNDesigner() {
   const isAnimatingRef = useRef<boolean>(false);
   const playbackTimeoutRef = useRef<number | null>(null);
   const [hideStandardWeights, setHideStandardWeights] = useState<boolean>(false);
+  const [touchMultiSelect, setTouchMultiSelect] = useState<boolean>(false);
   const [showCleanDialog, setShowCleanDialog] = useState<boolean>(false);
 
   const copyBufferRef = useRef<{
@@ -3483,9 +3489,16 @@ export default function RSNNDesigner() {
         }
       }}
     >
-      <div className="mx-auto max-w-6xl flex flex-col gap-3 p-4">
+      <div className="mx-auto max-w-6xl flex flex-col gap-3 page-shell">
         <header className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl font-semibold">Recurrent Spiking Neural Network Canvas</h1>
+          <h1 className="text-xl font-bold min-w-0">Recurrent Spiking Neural Network Canvas</h1>
+          {onToggleTheme ? (
+            <div className="theme-toggle-wrapper">
+              <button className="theme-toggle-button" onClick={onToggleTheme} type="button">
+                {isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+              </button>
+            </div>
+          ) : null}
           <span className="ml-auto" />
           <button
             className={`px-3 py-1 rounded-full border transition ${
@@ -3562,10 +3575,9 @@ export default function RSNNDesigner() {
           >
             Clean canvas
           </button>
-          <br></br>
           <div className="h-6 w-px bg-gray-300 mx-1" />
-          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("hidden")}>+ Hidden</button>
           <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("input")}>+ Input</button>
+          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("hidden")}>+ Hidden</button>
           <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("output")}>+ Output</button>
           <button
             className="px-3 py-1 rounded-full border"
@@ -3574,6 +3586,13 @@ export default function RSNNDesigner() {
             title="Delete selected"
           >
             Delete
+          </button>
+          <button
+            className={`px-3 py-1 rounded-full border ${touchMultiSelect ? "bg-blue-50 border-blue-300 text-blue-700" : ""}`}
+            onClick={() => setTouchMultiSelect((prev) => !prev)}
+            title="Enable to keep adding to the selection when tapping (helpful on touch screens)"
+          >
+            {touchMultiSelect ? "Multi-Select: On" : "Multi-Select: Off"}
           </button>
           <br></br>
           <button
@@ -3606,50 +3625,64 @@ export default function RSNNDesigner() {
           </button>
           <button
             className="px-3 py-1 rounded-full border"
-            onClick={() => primaryGroup && saveGroupAsModule(primaryGroup)}
+            onClick={() => {
+              if (primaryGroup) saveGroupAsModule(primaryGroup);
+            }}
             disabled={!primaryGroup}
             title="Save selected group as module"
           >
             Save as Module
           </button>
-          {primaryGroup && (
-            <label className="ml-2 flex items-center gap-2 text-xs text-gray-600">
-              Group label: 
-              <input
-                className="w-32 px-2 py-0.5 border rounded-lg text-sm"
-                type="text"
-                value={groupLabelDraft}
-                onChange={(e) => setGroupLabelDraft(e.target.value)}
-                onBlur={() => renameGroup(primaryGroup.id, groupLabelDraft)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
+          <label
+            className="ml-2 flex items-center gap-2 text-xs text-gray-600"
+            style={{ opacity: primaryGroup ? 1 : 0.5 }}
+          >
+            Group label: 
+            <input
+              className="w-32 px-2 py-0.5 border rounded-lg text-sm"
+              type="text"
+              disabled={!primaryGroup}
+              value={primaryGroup ? groupLabelDraft : ""}
+              onChange={(e) => setGroupLabelDraft(e.target.value)}
+              onBlur={() => {
+                if (primaryGroup) renameGroup(primaryGroup.id, groupLabelDraft);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (primaryGroup) {
                     renameGroup(primaryGroup.id, groupLabelDraft);
                     (e.target as HTMLInputElement).blur();
                   }
-                }}
-              />
-            </label>
-          )}
-          {primaryGroup && !isPrimaryGroupCompressed && (
-            <button
-              className="px-3 py-1 rounded-full border"
-              onClick={() => compressGroup(primaryGroup.id)}
-              title="Compress group into single node"
-            >
-              Compress
-            </button>
-          )}
-          {primaryGroup && isPrimaryGroupCompressed && (
-            <button
-              className="px-3 py-1 rounded-full border"
-              onClick={() => expandGroup(primaryGroup.id)}
-              title="Expand compressed group"
-            >
-              Expand
-            </button>
-          )}
-        
+                }
+              }}
+            />
+          </label>
+          <button
+            className="px-3 py-1 rounded-full border"
+            onClick={() => {
+              if (primaryGroup && !isPrimaryGroupCompressed) {
+                compressGroup(primaryGroup.id);
+              }
+            }}
+            disabled={!primaryGroup || isPrimaryGroupCompressed}
+            title="Compress group into single node"
+          >
+            Compress
+          </button>
+          <button
+            className="px-3 py-1 rounded-full border"
+            onClick={() => {
+              if (primaryGroup && isPrimaryGroupCompressed) {
+                expandGroup(primaryGroup.id);
+              }
+            }}
+            disabled={!primaryGroup || !isPrimaryGroupCompressed}
+            title="Expand compressed group"
+          >
+            Expand
+          </button>
+
           {/* <button
             className="px-3 py-1 rounded-full border"
             onClick={openDynamicsPanels}
@@ -3742,6 +3775,7 @@ export default function RSNNDesigner() {
               showOutputPotentials={showOutputPotentials}
               includeColors={includeColors}
               hideStandardWeights={hideStandardWeights}
+              stickyMultiSelect={touchMultiSelect}
               onSelectGroup={(group, modifiers) => handleGroupPointerDown(group.id, modifiers)}
               onNodePointerDown={handleNodePointerDown}
               onNodeDoubleClick={openDynamicsPanelForNeuron}
@@ -3818,6 +3852,19 @@ export default function RSNNDesigner() {
               </div>
             )}
           </div>
+          {selectedNodeIds.length === 1 && (
+            <div className="mt-4"><br></br>
+              <NeuronInspector
+                neurons={neurons}
+                selectedIds={selectedNodeIds}
+                onLabel={setLabel}
+                onRole={setRole}
+                onLabelVisible={setLabelVisibility}
+                onLabelOffset={setLabelOffset}
+                onResetLabelOffset={resetLabelOffset}
+              />
+            </div>
+          )}
           <EdgeEditor edge={edges.find((e) => e.id === selectedEdgeId) || null} onChange={setWeight} onRemove={removeEdge} />
         </div>
 
@@ -3934,7 +3981,6 @@ export default function RSNNDesigner() {
             </div>
           </div>
               
-          <br></br>
           {/* Input spike editors */}
           <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
             <div className="text-lg font-semibold">Input Spike Trains</div>
@@ -3985,16 +4031,6 @@ export default function RSNNDesigner() {
             </div>
           </div>
 
-          {/* Neuron inspector */}
-          <NeuronInspector
-            neurons={neurons}
-            selectedIds={selectedNodeIds}
-            onLabel={setLabel}
-            onRole={setRole}
-            onLabelVisible={setLabelVisibility}
-            onLabelOffset={setLabelOffset}
-            onResetLabelOffset={resetLabelOffset}
-          />
         </div>
         </div>
 
@@ -4150,6 +4186,7 @@ export default function RSNNDesigner() {
                     dynamicsPanels={[]}
                     dynamicsData={{ sim: null, T: T }}
                     includeColors={includeColors}
+                    stickyMultiSelect={touchMultiSelect}
                     onSelectGroup={(group, _modifiers) => []}
                     onNodePointerDown={handleModuleNodePointerDown}
                     onSelectEdge={handleModuleEdgePointerDown}
@@ -4258,6 +4295,7 @@ function CanvasView({
   showOutputPotentials = false,
   includeColors = true,
   hideStandardWeights = false,
+  stickyMultiSelect = false,
   onSelectGroup,
   onNodePointerDown,
   onNodeDoubleClick,
@@ -4305,6 +4343,7 @@ function CanvasView({
   showOutputPotentials?: boolean;
   includeColors?: boolean;
   hideStandardWeights?: boolean;
+  stickyMultiSelect?: boolean;
   onSelectGroup: (group: Group, modifiers: { append: boolean; toggle: boolean }) => string[];
   onNodePointerDown: (id: string, modifiers: { append: boolean; toggle: boolean }) => string[];
   onNodeDoubleClick?: (id: string) => void;
@@ -4364,8 +4403,9 @@ function CanvasView({
       }
     | null
   >(null);
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth <= 640 : false));
 
-  function coord(e: React.MouseEvent) {
+  function coord(e: React.PointerEvent | React.MouseEvent) {
     const svg = svgRef.current!;
     const pt = svg.createSVGPoint();
     pt.x = e.clientX;
@@ -4374,6 +4414,28 @@ function CanvasView({
     if (!ctm) return { x: 0, y: 0 };
     const p = pt.matrixTransform(ctm.inverse());
     return { x: p.x, y: p.y };
+  }
+
+  function endPointerSequence() {
+    if (marquee) {
+      finalizeMarqueeSelection();
+      return;
+    }
+    if (panelDrag) {
+      setPanelDrag(null);
+      return;
+    }
+    setDrag(null);
+    setLabelDrag(null);
+    setEdgePointDrag(null);
+    onEndDrag();
+  }
+
+  function pointerModifiers(event: React.PointerEvent | React.MouseEvent) {
+    return {
+      append: event.shiftKey || stickyMultiSelect,
+      toggle: event.metaKey || event.ctrlKey,
+    };
   }
 
   const R = NODE_RADIUS; // node radius
@@ -4396,6 +4458,15 @@ function CanvasView({
       }
     | null
   >(null);
+
+  useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth <= 640);
+    }
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   function finalizeMarqueeSelection() {
     setMarquee((prev) => {
@@ -4423,8 +4494,16 @@ function CanvasView({
       <svg
         ref={svgRef}
         viewBox={`0 0 ${viewWidth} ${viewHeight}`}
-        style={{ width: "100%", height: svgDisplayHeight }}
-        onMouseMove={(e) => {
+        style={{
+          width: "100%",
+          height: isMobile ? undefined : svgDisplayHeight,
+          touchAction: "none",
+          display: "block",
+        }}
+        onPointerMove={(e) => {
+          if (drag || labelDrag || edgePointDrag || marquee || panelDrag) {
+            e.preventDefault();
+          }
           const { x, y } = coord(e);
           setMousePos({ x, y });
           if (marquee) {
@@ -4459,34 +4538,9 @@ function CanvasView({
             onMoveEdgePoint(edgePointDrag.edgeId, edgePointDrag.index, { x, y });
           }
         }}
-        onMouseUp={() => {
-          if (marquee) {
-            finalizeMarqueeSelection();
-            return;
-          }
-          if (panelDrag) {
-            setPanelDrag(null);
-            return;
-          }
-          setDrag(null);
-          setLabelDrag(null);
-          setEdgePointDrag(null);
-          onEndDrag();
-        }}
-        onMouseLeave={() => {
-          if (marquee) {
-            finalizeMarqueeSelection();
-            return;
-          }
-          if (panelDrag) {
-            setPanelDrag(null);
-            return;
-          }
-          setDrag(null);
-          setLabelDrag(null);
-          setEdgePointDrag(null);
-          onEndDrag();
-        }}
+        onPointerUp={endPointerSequence}
+        onPointerLeave={endPointerSequence}
+        onPointerCancel={endPointerSequence}
         onContextMenu={(e) => {
           if (mode === "connect" && connectSrc) {
             e.preventDefault();
@@ -4497,7 +4551,7 @@ function CanvasView({
         {/* defs */}
         <defs>
           <pattern id={`${idPrefix}-grid`} width="20" height="20" patternUnits="userSpaceOnUse">
-            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e5e7eb" strokeWidth="1" />
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#838383ff" strokeWidth="1" strokeOpacity="0.5" />
           </pattern>
           <marker
             id={`${idPrefix}-arrow`}
@@ -4520,7 +4574,8 @@ function CanvasView({
           width={viewWidth}
           height={viewHeight}
           fill="white"
-          onMouseDown={(e) => {
+          onPointerDown={(e) => {
+            e.preventDefault();
             if (mode === "select" && e.shiftKey) {
               const { x, y } = coord(e);
               setMarquee({
@@ -4591,7 +4646,8 @@ function CanvasView({
           return (
             <g
               key={g.id}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
+                e.preventDefault();
                 if (mode === "connect") {
                   e.stopPropagation();
                   onExitConnectMode();
@@ -4599,10 +4655,7 @@ function CanvasView({
                 }
                 if (mode !== "select") return;
                 e.stopPropagation();
-                const selection = onSelectGroup(g, {
-                  append: e.shiftKey,
-                  toggle: e.metaKey || e.ctrlKey,
-                });
+                const selection = onSelectGroup(g, pointerModifiers(e));
                 const idsToDrag = selection.length ? selection : [];
                 if (!idsToDrag.length) return;
                 onBeginDrag(idsToDrag);
@@ -4683,12 +4736,14 @@ function CanvasView({
           return (
             <g
               key={e.id}
-              onMouseDown={(ev) => {
+              onPointerDown={(ev) => {
+                ev.preventDefault();
                 onSelectEdge(e.id);
                 onSelectEdgeHandle(e.id, null);
                 setEdgePointDrag(null);
                 ev.stopPropagation();
-              }}              onDoubleClick={(ev) => {
+              }}
+              onDoubleClick={(ev) => {
                 ev.stopPropagation();
                 ev.preventDefault();
                 if (mode !== "select") {
@@ -4746,10 +4801,10 @@ function CanvasView({
                       stroke={isHandleActive ? "#c2410c" : "#111827"}
                       strokeWidth={isHandleActive ? 2 : 1.5}
                       className="cursor-move"
-                      onMouseDown={(ev) => {
+                      onPointerDown={(ev) => {
+                        ev.preventDefault();
                         if (mode !== "select") return;
                         ev.stopPropagation();
-                        ev.preventDefault();
                         onSelectEdge(e.id);
                         onSelectEdgeHandle(e.id, idx);
                         onBeginEdgeDrag(e.id, idx);
@@ -4805,20 +4860,13 @@ function CanvasView({
             <g
               key={n.id}
               transform={`translate(${n.x},${n.y})`}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 setEdgePointDrag(null);
                 if (mode === "select") {
-                  const svg = e.currentTarget.ownerSVGElement!;
-                  const pt = svg.createSVGPoint();
-                  pt.x = e.clientX;
-                  pt.y = e.clientY;
-                  const ctm = svg.getScreenCTM();
-                  const p = ctm ? pt.matrixTransform(ctm.inverse()) : ({ x: n.x, y: n.y } as any);
-                  const selection = onNodePointerDown(n.id, {
-                    append: e.shiftKey,
-                    toggle: e.metaKey || e.ctrlKey,
-                  });
+                  const point = coord(e);
+                  const selection = onNodePointerDown(n.id, pointerModifiers(e));
                   const idsToDrag = selection.length ? selection : [n.id];
                   if (!idsToDrag.length) {
                     setDrag(null);
@@ -4830,7 +4878,7 @@ function CanvasView({
                     const target = neurons.find((node) => node.id === id);
                     if (target) startPositions[id] = { x: target.x, y: target.y };
                   }
-                  setDrag({ ids: idsToDrag, origin: { x: p.x, y: p.y }, startPositions });
+                  setDrag({ ids: idsToDrag, origin: { x: point.x, y: point.y }, startPositions });
                 } else if (mode === "connect") {
                   if (!connectSrc) onBeginConnect(n.id);
                   else onCompleteConnect(n.id);
@@ -4855,13 +4903,11 @@ function CanvasView({
                 <g
                   transform={`translate(${labelOffsetX},${labelOffsetY})`}
                   className="cursor-move"
-                  onMouseDown={(e) => {
+                  onPointerDown={(e) => {
+                    e.preventDefault();
                     if (mode !== "select") return;
                     e.stopPropagation();
-                    onNodePointerDown(n.id, {
-                      append: e.shiftKey,
-                      toggle: e.metaKey || e.ctrlKey,
-                    });
+                    onNodePointerDown(n.id, pointerModifiers(e));
                     onBeginLabelDrag(n.id);
                     const { x, y } = coord(e);
                     setDrag(null);
@@ -4915,7 +4961,8 @@ function CanvasView({
           return (
             <g
               key={`${g.id}-compressed`}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
+                e.preventDefault();
                 if (mode === "connect") {
                   e.stopPropagation();
                   onExitConnectMode();
@@ -4923,10 +4970,7 @@ function CanvasView({
                 }
                 if (mode !== "select") return;
                 e.stopPropagation();
-                const selection = onSelectGroup(g, {
-                  append: e.shiftKey,
-                  toggle: e.metaKey || e.ctrlKey,
-                });
+                const selection = onSelectGroup(g, pointerModifiers(e));
                 const idsToDrag = selection.length ? selection : [];
                 if (!idsToDrag.length) return;
                 onBeginDrag(idsToDrag);
@@ -5034,7 +5078,8 @@ function CanvasView({
             <g
               key={panel.id}
               transform={`translate(${panel.x},${panel.y})`}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 const { x, y } = coord(e);
                 setPanelDrag({ panelId: panel.id, origin: { x, y }, start: { x: panel.x, y: panel.y } });
@@ -5064,7 +5109,10 @@ function CanvasView({
                     dominantBaseline="middle"
                     textAnchor="end"
                     style={{ cursor: "pointer" }}
-                    onMouseDown={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
                     onClick={(e) => {
                       e.stopPropagation();
                       onClosePanel(panel.id);
@@ -5156,7 +5204,7 @@ function EdgeEditor({ edge, onChange, onRemove }: { edge: Edge | null; onChange:
   return (
     <div className="mt-2 p-3 rounded-2xl border shadow-sm bg-white flex items-end gap-2 w-full">
       <div className="grow">
-        <div className="text-sm font-medium mb-1">Edit Connection</div>
+        <div className="text-lg font-semibold">Edge Connection</div>
         <div className="text-xs text-gray-500 mb-2">
           {edge.sourceId.slice(-4)} → {edge.targetId.slice(-4)}
         </div>
@@ -5195,34 +5243,12 @@ function NeuronInspector({
   onLabelOffset: (id: string, offsetX: number, offsetY: number) => void;
   onResetLabelOffset: (id: string) => void;
 }) {
-  const baseClass = "p-3 rounded-2xl border shadow-sm bg-white min-h-[260px]";
-
-  
-  if (selectedIds.length === 0)
-    return (
-      <div className={baseClass}>
-        <div className="text-lg font-semibold">Neuron Inspector</div>
-        <div className="text-gray-500">Select a neuron to edit.</div>
-      </div>
-    );
-
-  if (selectedIds.length > 1)
-    return (
-      <div className={baseClass}>
-        <div className="text-lg font-semibold">Neuron Inspector</div>
-        <div className="text-gray-500">Multiple neurons selected ({selectedIds.length}).</div>
-        <div className="text-gray-500">Use single selection to edit metadata.</div>
-      </div>
-    );
+  if (selectedIds.length !== 1) return null;
 
   const neuron = neurons.find((n) => n.id === selectedIds[0]) || null;
   if (!neuron)
-    return (
-      <div className={baseClass}>
-        <div className="text-lg font-semibold">Neuron Inspector</div>
-        <div className="text-gray-500">Neuron not found.</div>
-      </div>
-    );
+    return null;
+  const baseClass = "p-3 rounded-2xl border shadow-sm bg-white min-h-[260px]";
   const labelVisible = neuron.labelVisible === true;
   const labelOffsetX = Number.isFinite(neuron.labelOffsetX) ? (neuron.labelOffsetX as number) : 0;
   const labelOffsetY = Number.isFinite(neuron.labelOffsetY)
@@ -5452,7 +5478,7 @@ function RasterPlot({ neurons, spikeTrains, T }: { neurons: Neuron[]; spikeTrain
             <text x={10} y={y + 4} fontSize={11} fill="#374151">
               {n.label}
             </text>
-            <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="#f3f4f6" />
+            <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="#181c24ff" />
             {spikes.map((s, i) => (
               <line key={i} x1={x(s)} x2={x(s)} y1={y - 6} y2={y + 6} stroke={color} strokeWidth={2} />
             ))}
