@@ -1,6 +1,6 @@
 # GUI for Simulating Recurrent Spiking Neural Networks
 
-An interactive **React + TypeScript** canvas to **draw**, **simulate**, and **visualize** recurrent spiking neural networks (RSNNs).  
+An interactive **React + TypeScript** canvas to **draw**, **simulate**, and **visualize** recurrent spiking neural networks.  
 Add neurons, connect them with weighted directed edges, assign exogenous input spike trains, and step through the resulting recurrent spiking cascades with a raster plot and inline dynamics panels. Includes grouping, reusable **modules**, JSON import/export, and PDF canvas export.
 
 Simply open the link: [hundrieser.github.io/rsnn](https://hundrieser.github.io/rsnn) 
