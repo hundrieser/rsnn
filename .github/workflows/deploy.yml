@@ -23,13 +23,38 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      # optionaler SPA-Fix, siehe Hinweis unten:
-      - run: cp dist/index.html dist/404.html || true
+      - name: Install dependencies
+        run: npm ci
+      - name: Build project
+        run: npm run build
+
+      - name: Show workspace and verify docs exists
+        run: |
+          echo "=== workspace listing ==="
+          ls -la
+          echo "=== root files ==="
+          ls -la . || true
+          echo "=== attempt to list docs ==="
+          if [ -d docs ]; then
+            echo "docs directory exists"
+            ls -la docs
+          else
+            echo "ERROR: docs directory not found after build" >&2
+            exit 1
+          fi
+
+      - name: Add 404.html for SPA fallback
+        run: |
+          if [ -f docs/index.html ]; then
+            cp docs/index.html docs/404.html
+          else
+            echo "ERROR: docs/index.html not found, build may have failed" >&2
+            exit 1
+          fi
+
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: docs
 
   deploy:
     needs: build
