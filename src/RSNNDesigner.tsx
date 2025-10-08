@@ -3876,9 +3876,9 @@ export default function RSNNDesigner() {
                     Stop
                   </button>
                 )}
-                <button className="px-3 py-1 rounded-full border" onClick={clearSimulation}>
+                {/* <button className="px-3 py-1 rounded-full border" onClick={clearSimulation}>
                   Clear
-                </button>
+                </button> */}
               </div>
             </div>
           </div>
