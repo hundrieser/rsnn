@@ -6,9 +6,13 @@ function ensureHashPrefix(prefix) {
   }
   const { location } = window;
   if (!location.hash || !location.hash.startsWith(prefix)) {
-    const base = location.href.split("#")[0];
-    location.replace(`${base}${prefix}`);
+    window.history.replaceState(null, "", location.pathname + location.search + prefix);
   }
+}
+
+// Ensure hash is set before React renders
+if (typeof window !== "undefined") {
+  ensureHashPrefix("#/");
 }
 
 export function HashRouter({ children, prefix = "#/" }) {
