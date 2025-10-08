@@ -559,7 +559,7 @@ export default function RSNNDesigner() {
   const [T, setT] = useState<number>(10);
   const [hKind, setHKind] = useState<"finite" | "zero" | "infty">("finite");
   const [hVal, setHVal] = useState<number>(3);
-  const [canvasWidth, setCanvasWidth] = useState<number>(900);
+  const [canvasWidth, setCanvasWidth] = useState<number>(800);
   const [canvasHeight, setCanvasHeight] = useState<number>(400);
   const [defaultEdgeWeight, setDefaultEdgeWeight] = useState<number>(DEFAULT_EDGE_WEIGHT);
   const [defaultEdgeWeightInput, setDefaultEdgeWeightInput] = useState<string>(String(DEFAULT_EDGE_WEIGHT));
@@ -5411,7 +5411,7 @@ function ModuleNeuronInspector({
 
 function RasterPlot({ neurons, spikeTrains, T }: { neurons: Neuron[]; spikeTrains: Record<string, number[]>; T: number }) {
   const height = Math.max(120, 20 * neurons.length + 40);
-  const width = 900;
+  const width = 800;
   const padLeft = 60,
     padRight = 20,
     padTop = 20,
@@ -5474,11 +5474,11 @@ function PotentialPlot({ neurons: hiddenNeurons, series, T }: { neurons: Neuron[
     return <div className="text-gray-500 text-sm">No hidden neurons available for potential traces.</div>;
   }
 
-  const width = 900;
+  const width = 800;
   const height = 280;
   const padLeft = 60;
   const padRight = 20;
-  const padTop = 20;
+  const padTop = 10;
   const padBottom = 40;
 
   const maxTime = Math.max(series.times[series.times.length - 1] ?? 0, T);
