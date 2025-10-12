@@ -841,6 +841,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const [showDynamicsHeaders, setShowDynamicsHeaders] = useState<boolean>(true);
   const [showOutputPotentials, setShowOutputPotentials] = useState<boolean>(false);
   const [includeColors, setIncludeColors] = useState<boolean>(true);
+  const [includeAnimationCounterInPdf, setIncludeAnimationCounterInPdf] = useState<boolean>(false);
 
   const openDynamicsPanelForNeuron = useCallback(
     (neuronId: string) => {
@@ -3069,6 +3070,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         showDynamicsHeaders,
         showOutputPotentials,
         includeColors,
+        includeAnimationCounterInPdf,
       },
       modules: modules.map((module) => ({
         id: module.id,
@@ -3266,10 +3268,17 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         } else {
           setIncludeColors(true);
         }
+        const includeCounterValue = dynamicsSettings.includeAnimationCounterInPdf;
+        if (typeof includeCounterValue === "boolean") {
+          setIncludeAnimationCounterInPdf(includeCounterValue);
+        } else {
+          setIncludeAnimationCounterInPdf(false);
+        }
       } else {
         setShowDynamicsHeaders(true);
         setShowOutputPotentials(false);
         setIncludeColors(true);
+        setIncludeAnimationCounterInPdf(false);
       }
 
       if (data && typeof data.inputs === "object") {
@@ -3424,6 +3433,16 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     clone.style.height = `${exportHeight}px`;
 
     const serializedSvg = clone.outerHTML;
+    const showCounterOverlay = includeAnimationCounterInPdf && hasAnimation;
+    const overlayTextParts: string[] = [];
+    if (showCounterOverlay) {
+      overlayTextParts.push(`t = ${formattedClock}s`);
+      overlayTextParts.push(`Step ${frameIndexDisplay}/${frameTotal}`);
+      if (currentFrame) {
+        overlayTextParts.push(`Wave ${currentWaveDisplay}`);
+      }
+    }
+    const overlayHtml = showCounterOverlay ? `<div class="overlay">${overlayTextParts.join(" • ")}</div>` : "";
 
     const html = `<!DOCTYPE html>
 <html>
@@ -3435,13 +3454,18 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       * { box-sizing: border-box; }
       html, body { margin: 0; padding: 0; }
       body { background: #ffffff; width: ${exportWidth}px; height: ${exportHeight}px; display: flex; align-items: center; justify-content: center; font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      svg { width: ${exportWidth}px; height: ${exportHeight}px; }
+      .export-shell { position: relative; width: ${exportWidth}px; height: ${exportHeight}px; }
+      .export-shell svg { width: 100%; height: 100%; display: block; }
+      .export-shell .overlay { position: absolute; right: 16px; bottom: 16px; background: rgba(0, 0, 0, 0.75); color: #ffffff; font-size: 12px; padding: 6px 12px; border-radius: 9999px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25); font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       svg, svg * { font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; }
       @page { size: ${exportWidth}px ${exportHeight}px; margin: 0; }
     </style>
   </head>
   <body>
-    ${serializedSvg}
+    <div class="export-shell">
+      ${serializedSvg}
+      ${overlayHtml}
+    </div>
     <script>
       window.addEventListener('load', function () {
         setTimeout(function () {
@@ -4062,6 +4086,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 onChange={onImportInputChange}
               />
             </div>
+            <label
+              className={`mt-2 flex items-center gap-2 text-xs text-gray-600 ${hasAnimation ? "" : "opacity-60"}`}
+              title={
+                hasAnimation
+                  ? "Toggle whether the animation counter overlay is included in PDF canvas exports."
+                  : "Run a simulation with spike animation to enable the counter overlay in PDF exports."
+              }
+            >
+              <input
+                type="checkbox"
+                className="accent-black"
+                checked={includeAnimationCounterInPdf}
+                disabled={!hasAnimation}
+                onChange={(e) => setIncludeAnimationCounterInPdf(e.target.checked)}
+              />
+              Include animation counter overlay in PDF
+            </label>
           </div>
               
           {/* Input spike editors */}
