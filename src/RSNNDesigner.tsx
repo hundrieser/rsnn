@@ -1,4 +1,29 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
+import { jsPDF } from "jspdf";
+import "svg2pdf.js";
+
+type FileSystemHandlePermissionMode = "read" | "readwrite";
+
+type FileSystemWritableFileStream = {
+  write(data: BlobPart | BufferSource | Blob | string): Promise<void>;
+  close(): Promise<void>;
+};
+
+type FileSystemFileHandle = {
+  name: string;
+  createWritable(options?: { keepExistingData?: boolean }): Promise<FileSystemWritableFileStream>;
+};
+
+type FileSystemDirectoryHandle = {
+  name: string;
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<FileSystemFileHandle>;
+};
+
+declare global {
+  interface Window {
+    showDirectoryPicker?: (options?: { mode?: FileSystemHandlePermissionMode }) => Promise<FileSystemDirectoryHandle>;
+  }
+}
 
 /**
  * Recurrent Spiking Neural Network — Canvas GUI
@@ -160,6 +185,31 @@ function uniqueSorted(nums: number[]): number[] {
     last = n;
   }
   return out;
+}
+
+function prepareCanvasSvgClone(svgElement: SVGSVGElement, width: number, height: number): SVGSVGElement {
+  const clone = svgElement.cloneNode(true) as SVGSVGElement;
+  clone.querySelectorAll<SVGRectElement>('rect[fill^="url("]').forEach((rect) => {
+    const fill = rect.getAttribute("fill");
+    if (fill && fill.includes("-grid")) {
+      rect.setAttribute("fill", "#ffffff");
+    }
+  });
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.removeAttribute("style");
+  clone.setAttribute("width", `${width}`);
+  clone.setAttribute("height", `${height}`);
+  clone.style.width = `${width}px`;
+  clone.style.height = `${height}px`;
+  return clone;
+}
+
+function waitForNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      resolve();
+    });
+  });
 }
 
 function expDecay(delta: number, h: number): number {
@@ -842,6 +892,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const [showOutputPotentials, setShowOutputPotentials] = useState<boolean>(false);
   const [includeColors, setIncludeColors] = useState<boolean>(true);
   const [includeAnimationCounterInPdf, setIncludeAnimationCounterInPdf] = useState<boolean>(false);
+  const [isExportingAnimationPdfs, setIsExportingAnimationPdfs] = useState<boolean>(false);
 
   const openDynamicsPanelForNeuron = useCallback(
     (neuronId: string) => {
@@ -3402,6 +3453,124 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     }
   }
 
+  async function exportAnimationPdfs() {
+    if (isExportingAnimationPdfs) return;
+    const frames = animationFramesRef.current;
+    if (!frames.length) {
+      alert("Run an animation before exporting frame PDFs.");
+      return;
+    }
+    if (typeof window.showDirectoryPicker !== "function") {
+      alert("Your browser does not support selecting folders for export.");
+      return;
+    }
+    const container = canvasExportRef.current;
+    if (!container) {
+      alert("Canvas view unavailable. Please try again.");
+      return;
+    }
+    if (!(container.querySelector("svg") instanceof SVGSVGElement)) {
+      alert("Canvas SVG could not be located.");
+      return;
+    }
+    setIsExportingAnimationPdfs(true);
+    const exportWidth = Math.max(200, canvasWidth);
+    const exportHeight = Math.max(200, canvasHeight);
+    const wasAnimating = isAnimatingRef.current;
+    const previousIndex = animationIndexRef.current;
+    pauseAnimation();
+
+    const formatTimeToken = (time: number) => {
+      return time.toFixed(3).replace(/\.?0+$/, "").replace(/\./g, "p") || "0";
+    };
+
+    try {
+      const directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+      if (!directoryHandle) {
+        return;
+      }
+      let exportedCount = 0;
+      for (let i = 0; i < frames.length; i++) {
+        const frame = frames[i];
+        displayFrame(i);
+        await waitForNextFrame();
+
+        const currentSvg = container.querySelector("svg");
+        if (!(currentSvg instanceof SVGSVGElement)) {
+          continue;
+        }
+        const clone = prepareCanvasSvgClone(currentSvg, exportWidth, exportHeight);
+
+        const pdf = new jsPDF({
+          orientation: exportWidth >= exportHeight ? "landscape" : "portrait",
+          unit: "px",
+          format: [exportWidth, exportHeight],
+        });
+        pdf.setFillColor(255, 255, 255);
+        pdf.rect(0, 0, exportWidth, exportHeight, "F");
+        await pdf.svg(clone, {
+          x: 0,
+          y: 0,
+          width: exportWidth,
+          height: exportHeight,
+        });
+
+        if (includeAnimationCounterInPdf) {
+          const overlayParts = [
+            `t = ${frame.time.toFixed(3)}s`,
+            `Step ${i + 1}/${frames.length}`,
+            `Wave ${frame.wave + 1}`,
+          ];
+          const overlayText = overlayParts.join(" • ");
+          const fontSize = 14;
+          pdf.setFontSize(fontSize);
+          const paddingX = 18;
+          const paddingY = 10;
+          const textWidth = pdf.getTextWidth(overlayText);
+          const overlayHeight = fontSize + paddingY * 2;
+          const overlayWidth = textWidth + paddingX * 2;
+          const overlayX = Math.max(16, exportWidth - overlayWidth - 16);
+          const overlayY = exportHeight - overlayHeight - 16;
+          pdf.setFillColor(0, 0, 0);
+          pdf.roundedRect(overlayX, overlayY, overlayWidth, overlayHeight, 12, 12, "F");
+          pdf.setTextColor(255, 255, 255);
+          pdf.text(overlayText, overlayX + paddingX, overlayY + overlayHeight / 2, {
+            baseline: "middle",
+          });
+        }
+
+        const stepToken = String(i + 1).padStart(3, "0");
+        const timeToken = formatTimeToken(frame.time);
+        const waveToken = String(frame.wave + 1).padStart(2, "0");
+        const fileName = `steps_${stepToken}_time_${timeToken}_wave_${waveToken}.pdf`;
+
+        const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(pdf.output("arraybuffer"));
+        await writable.close();
+        exportedCount += 1;
+      }
+      if (exportedCount > 0) {
+        alert(`Exported ${exportedCount} PDF${exportedCount === 1 ? "" : "s"} to "${directoryHandle.name}".`);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        console.error(error);
+        alert("Failed to export animation PDFs. Please try again.");
+      }
+    } finally {
+      if (previousIndex >= 0) {
+        displayFrame(previousIndex);
+      } else {
+        displayNoFrame();
+      }
+      if (wasAnimating) {
+        resumeAnimation();
+      }
+      setIsExportingAnimationPdfs(false);
+    }
+  }
+
   function exportCanvasPdf() {
     const container = canvasExportRef.current;
     if (!container) {
@@ -4067,6 +4236,20 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             <div className="flex flex-wrap gap-2">
               <button className="px-3 py-1 rounded-full border" onClick={exportCanvasPdf}>
                 Export Canvas as PDF
+              </button>
+              <button
+                className="px-3 py-1 rounded-full border"
+                onClick={exportAnimationPdfs}
+                disabled={!hasAnimation || isExportingAnimationPdfs}
+                title={
+                  hasAnimation
+                    ? isExportingAnimationPdfs
+                      ? "Generating PDFs for each animation step..."
+                      : "Select a folder to export a PDF for each animation frame."
+                    : "Run a spike animation to enable per-frame PDF export."
+                }
+              >
+                {isExportingAnimationPdfs ? "Exporting..." : "Export Animation PDFs"}
               </button>
               <button className="px-3 py-1 rounded-full border" onClick={exportState}>
                 Export JSON
