@@ -4120,7 +4120,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         </div>
         {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
         <div ref={rasterExportRef}>
-          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} />
+          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
           
         </div>
         </div>
@@ -5515,8 +5515,21 @@ function ModuleNeuronInspector({
 
 // ------------------------ Raster Plot ------------------------
 
-function RasterPlot({ neurons, spikeTrains, T }: { neurons: Neuron[]; spikeTrains: Record<string, number[]>; T: number }) {
-  const height = Math.max(120, 20 * neurons.length + 40);
+function RasterPlot({
+  neurons,
+  spikeTrains,
+  T,
+  selectedNeuronIds,
+}: {
+  neurons: Neuron[];
+  spikeTrains: Record<string, number[]>;
+  T: number;
+  selectedNeuronIds: string[];
+}) {
+  const selectedSet = useMemo(() => new Set(selectedNeuronIds), [selectedNeuronIds]);
+  const displayNeurons = selectedNeuronIds.length ? neurons.filter((n) => selectedSet.has(n.id)) : neurons;
+
+  const height = Math.max(120, 20 * displayNeurons.length + 40);
   const width = 800;
   const padLeft = 60,
     padRight = 20,
@@ -5549,7 +5562,7 @@ function RasterPlot({ neurons, spikeTrains, T }: { neurons: Neuron[]; spikeTrain
       })}
 
       {/* Rows */}
-      {neurons.map((n, row) => {
+      {displayNeurons.map((n, row) => {
         const y = padTop + 20 + row * 20;
         const color = n.role === "input" ? "#60a5fa" : n.role === "output" ? "#f59e0b" : "#a78bfa";
         const spikes = (spikeTrains[n.id] || []).filter((s) => s <= T);
