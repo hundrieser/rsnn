@@ -4780,7 +4780,17 @@ function CanvasView({
             </g>
           );
         })}
-        <rect x={0} y={0} width={viewWidth} height={viewHeight} fill={`url(#${idPrefix}-grid)`} pointerEvents="none" />
+        <rect
+          x={0}
+          y={0}
+          width={viewWidth}
+          height={viewHeight}
+          fill={`url(#${idPrefix}-grid)`}
+          stroke="#838383"
+          strokeOpacity="0.5"
+          strokeWidth={1}
+          pointerEvents="none"
+        />
 
         {/* edges */}
         {edges.map((e) => {
