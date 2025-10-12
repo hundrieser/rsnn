@@ -778,6 +778,13 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const canResume = !isAnimating && hasAnimation && animationIndex < frameTotal - 1;
   const freezeDisabled = isAnimating ? false : !canResume;
   const canJumpToEnd = hasAnimation && animationIndex !== frameTotal - 1;
+  const animateButtonLabel = isAnimating ? "Freeze" : canResume ? "Resume" : "Animate";
+  const animateButtonAction = isAnimating ? pauseAnimation : canResume ? resumeAnimation : animateSpikes;
+  const animateButtonTitle = isAnimating
+    ? "Pause spike propagation animation"
+    : canResume
+    ? "Resume spike propagation animation"
+    : "Play spike propagation animation";
   const currentFrame = animationIndex >= 0 ? animationFrames[animationIndex] : null;
   const currentWaveDisplay = currentFrame ? currentFrame.wave + 1 : 0;
   const formattedClock = Number.isFinite(animationClock) ? animationClock.toFixed(2) : "0.00";
@@ -3979,15 +3986,14 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 </button>
                 <button
                   className="px-3 py-1 rounded-full border"
-                  onClick={animateSpikes}
-                  disabled={isAnimating}
-                  title="Play spike propagation animation"
+                  onClick={animateButtonAction}
+                  title={animateButtonTitle}
                 >
-                  {isAnimating ? "Animating..." : "Animate"}
+                  {animateButtonLabel}
                 </button>
-                {isAnimating && (
+                {hasAnimation && (
                   <button className="px-3 py-1 rounded-full border" onClick={stopAnimation}>
-                    Stop
+                    {isAnimating ? "Stop" : "Hide"}
                   </button>
                 )}
                 {/* <button className="px-3 py-1 rounded-full border" onClick={clearSimulation}>
