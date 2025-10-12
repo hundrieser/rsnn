@@ -190,6 +190,9 @@ const TIME_SCALE_MS = 600; // milliseconds per simulated second
 const DEFAULT_MACRO_WIDTH = 480;
 const DEFAULT_MACRO_HEIGHT = 280;
 const DEFAULT_EDGE_WEIGHT = 2;
+const DEFAULT_CANVAS_WIDTH = 800;
+const DEFAULT_CANVAS_HEIGHT = 400;
+const MIN_CANVAS_DIMENSION = 200;
 
 const ROLE_FILL: Record<Role, string> = {
   input: "#ffedb4",
@@ -564,8 +567,10 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const [T, setT] = useState<number>(10);
   const [hKind, setHKind] = useState<"finite" | "zero" | "infty">("finite");
   const [hVal, setHVal] = useState<number>(3);
-  const [canvasWidth, setCanvasWidth] = useState<number>(800);
-  const [canvasHeight, setCanvasHeight] = useState<number>(400);
+  const [canvasWidth, setCanvasWidth] = useState<number>(DEFAULT_CANVAS_WIDTH);
+  const [canvasHeight, setCanvasHeight] = useState<number>(DEFAULT_CANVAS_HEIGHT);
+  const [canvasWidthInput, setCanvasWidthInput] = useState<string>(() => String(DEFAULT_CANVAS_WIDTH));
+  const [canvasHeightInput, setCanvasHeightInput] = useState<string>(() => String(DEFAULT_CANVAS_HEIGHT));
   const [defaultEdgeWeight, setDefaultEdgeWeight] = useState<number>(DEFAULT_EDGE_WEIGHT);
   const [defaultEdgeWeightInput, setDefaultEdgeWeightInput] = useState<string>(String(DEFAULT_EDGE_WEIGHT));
 
@@ -627,6 +632,67 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     inputIds: string[];
     outputIds: string[];
   } | null>(null);
+
+  const canvasWidthString = useMemo(() => String(canvasWidth), [canvasWidth]);
+  const canvasHeightString = useMemo(() => String(canvasHeight), [canvasHeight]);
+
+  useEffect(() => {
+    setCanvasWidthInput((prev) => (prev === canvasWidthString ? prev : canvasWidthString));
+  }, [canvasWidthString]);
+
+  useEffect(() => {
+    setCanvasHeightInput((prev) => (prev === canvasHeightString ? prev : canvasHeightString));
+  }, [canvasHeightString]);
+
+  const applyCanvasSize = useCallback(() => {
+    const rawWidth = Number(canvasWidthInput);
+    const rawHeight = Number(canvasHeightInput);
+
+    if (Number.isFinite(rawWidth)) {
+      const nextWidth = Math.max(MIN_CANVAS_DIMENSION, rawWidth);
+      if (nextWidth !== canvasWidth) {
+        setCanvasWidth(nextWidth);
+      }
+      const nextWidthString = String(nextWidth);
+      if (canvasWidthInput !== nextWidthString) {
+        setCanvasWidthInput(nextWidthString);
+      }
+    } else if (canvasWidthInput !== canvasWidthString) {
+      setCanvasWidthInput(canvasWidthString);
+    }
+
+    if (Number.isFinite(rawHeight)) {
+      const nextHeight = Math.max(MIN_CANVAS_DIMENSION, rawHeight);
+      if (nextHeight !== canvasHeight) {
+        setCanvasHeight(nextHeight);
+      }
+      const nextHeightString = String(nextHeight);
+      if (canvasHeightInput !== nextHeightString) {
+        setCanvasHeightInput(nextHeightString);
+      }
+    } else if (canvasHeightInput !== canvasHeightString) {
+      setCanvasHeightInput(canvasHeightString);
+    }
+  }, [
+    canvasWidthInput,
+    canvasHeightInput,
+    canvasWidth,
+    canvasHeight,
+    canvasWidthString,
+    canvasHeightString,
+  ]);
+
+  const handleCanvasSizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyCanvasSize();
+      }
+    },
+    [applyCanvasSize]
+  );
+
+  const isCanvasSizeDirty = canvasWidthInput !== canvasWidthString || canvasHeightInput !== canvasHeightString;
 
   // Ensure inputText has entries for input neurons (and only them)
   useEffect(() => {
@@ -3937,21 +4003,31 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               <input
                 className="col-span-2 px-2 py-1 border rounded-lg"
                 type="number"
-                min={200}
+                min={MIN_CANVAS_DIMENSION}
                 step={50}
-                value={canvasWidth}
-                onChange={(e) => setCanvasWidth(Math.max(200, Number(e.target.value)))}
+                value={canvasWidthInput}
+                onChange={(e) => setCanvasWidthInput(e.target.value)}
+                onKeyDown={handleCanvasSizeKeyDown}
               />
 
               <label className="col-span-1">Height</label>
               <input
                 className="col-span-2 px-2 py-1 border rounded-lg"
                 type="number"
-                min={200}
+                min={MIN_CANVAS_DIMENSION}
                 step={50}
-                value={canvasHeight}
-                onChange={(e) => setCanvasHeight(Math.max(200, Number(e.target.value)))}
+                value={canvasHeightInput}
+                onChange={(e) => setCanvasHeightInput(e.target.value)}
+                onKeyDown={handleCanvasSizeKeyDown}
               />
+              <button
+                type="button"
+                className="col-span-3 px-3 py-1 rounded-full border"
+                onClick={applyCanvasSize}
+                disabled={!isCanvasSizeDirty}
+              >
+                Apply
+              </button>
             </div>
           </div>
 
