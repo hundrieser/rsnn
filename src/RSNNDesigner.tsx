@@ -1,4 +1,29 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
+import { jsPDF } from "jspdf";
+import "svg2pdf.js";
+
+type FileSystemHandlePermissionMode = "read" | "readwrite";
+
+type FileSystemWritableFileStream = {
+  write(data: BlobPart | BufferSource | Blob | string): Promise<void>;
+  close(): Promise<void>;
+};
+
+type FileSystemFileHandle = {
+  name: string;
+  createWritable(options?: { keepExistingData?: boolean }): Promise<FileSystemWritableFileStream>;
+};
+
+type FileSystemDirectoryHandle = {
+  name: string;
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<FileSystemFileHandle>;
+};
+
+declare global {
+  interface Window {
+    showDirectoryPicker?: (options?: { mode?: FileSystemHandlePermissionMode }) => Promise<FileSystemDirectoryHandle>;
+  }
+}
 
 /**
  * Recurrent Spiking Neural Network — Canvas GUI
@@ -162,6 +187,31 @@ function uniqueSorted(nums: number[]): number[] {
   return out;
 }
 
+function prepareCanvasSvgClone(svgElement: SVGSVGElement, width: number, height: number): SVGSVGElement {
+  const clone = svgElement.cloneNode(true) as SVGSVGElement;
+  clone.querySelectorAll<SVGRectElement>('rect[fill^="url("]').forEach((rect) => {
+    const fill = rect.getAttribute("fill");
+    if (fill && fill.includes("-grid")) {
+      rect.setAttribute("fill", "#ffffff");
+    }
+  });
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.removeAttribute("style");
+  clone.setAttribute("width", `${width}`);
+  clone.setAttribute("height", `${height}`);
+  clone.style.width = `${width}px`;
+  clone.style.height = `${height}px`;
+  return clone;
+}
+
+function waitForNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      resolve();
+    });
+  });
+}
+
 function expDecay(delta: number, h: number): number {
   if (delta <= 0) return 1; // same-time use
   if (!Number.isFinite(h)) return 1; // h = ∞
@@ -190,6 +240,10 @@ const TIME_SCALE_MS = 600; // milliseconds per simulated second
 const DEFAULT_MACRO_WIDTH = 480;
 const DEFAULT_MACRO_HEIGHT = 280;
 const DEFAULT_EDGE_WEIGHT = 2;
+const DEFAULT_CANVAS_WIDTH = 800;
+const DEFAULT_CANVAS_HEIGHT = 400;
+const MIN_CANVAS_DIMENSION = 200;
+const CANVAS_FRAME_PADDING = 20;
 
 const ROLE_FILL: Record<Role, string> = {
   input: "#ffedb4",
@@ -564,8 +618,10 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const [T, setT] = useState<number>(10);
   const [hKind, setHKind] = useState<"finite" | "zero" | "infty">("finite");
   const [hVal, setHVal] = useState<number>(3);
-  const [canvasWidth, setCanvasWidth] = useState<number>(800);
-  const [canvasHeight, setCanvasHeight] = useState<number>(400);
+  const [canvasWidth, setCanvasWidth] = useState<number>(DEFAULT_CANVAS_WIDTH);
+  const [canvasHeight, setCanvasHeight] = useState<number>(DEFAULT_CANVAS_HEIGHT);
+  const [canvasWidthInput, setCanvasWidthInput] = useState<string>(() => String(DEFAULT_CANVAS_WIDTH));
+  const [canvasHeightInput, setCanvasHeightInput] = useState<string>(() => String(DEFAULT_CANVAS_HEIGHT));
   const [defaultEdgeWeight, setDefaultEdgeWeight] = useState<number>(DEFAULT_EDGE_WEIGHT);
   const [defaultEdgeWeightInput, setDefaultEdgeWeightInput] = useState<string>(String(DEFAULT_EDGE_WEIGHT));
 
@@ -627,6 +683,67 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     inputIds: string[];
     outputIds: string[];
   } | null>(null);
+
+  const canvasWidthString = useMemo(() => String(canvasWidth), [canvasWidth]);
+  const canvasHeightString = useMemo(() => String(canvasHeight), [canvasHeight]);
+
+  useEffect(() => {
+    setCanvasWidthInput((prev) => (prev === canvasWidthString ? prev : canvasWidthString));
+  }, [canvasWidthString]);
+
+  useEffect(() => {
+    setCanvasHeightInput((prev) => (prev === canvasHeightString ? prev : canvasHeightString));
+  }, [canvasHeightString]);
+
+  const applyCanvasSize = useCallback(() => {
+    const rawWidth = Number(canvasWidthInput);
+    const rawHeight = Number(canvasHeightInput);
+
+    if (Number.isFinite(rawWidth)) {
+      const nextWidth = Math.max(MIN_CANVAS_DIMENSION, rawWidth);
+      if (nextWidth !== canvasWidth) {
+        setCanvasWidth(nextWidth);
+      }
+      const nextWidthString = String(nextWidth);
+      if (canvasWidthInput !== nextWidthString) {
+        setCanvasWidthInput(nextWidthString);
+      }
+    } else if (canvasWidthInput !== canvasWidthString) {
+      setCanvasWidthInput(canvasWidthString);
+    }
+
+    if (Number.isFinite(rawHeight)) {
+      const nextHeight = Math.max(MIN_CANVAS_DIMENSION, rawHeight);
+      if (nextHeight !== canvasHeight) {
+        setCanvasHeight(nextHeight);
+      }
+      const nextHeightString = String(nextHeight);
+      if (canvasHeightInput !== nextHeightString) {
+        setCanvasHeightInput(nextHeightString);
+      }
+    } else if (canvasHeightInput !== canvasHeightString) {
+      setCanvasHeightInput(canvasHeightString);
+    }
+  }, [
+    canvasWidthInput,
+    canvasHeightInput,
+    canvasWidth,
+    canvasHeight,
+    canvasWidthString,
+    canvasHeightString,
+  ]);
+
+  const handleCanvasSizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyCanvasSize();
+      }
+    },
+    [applyCanvasSize]
+  );
+
+  const isCanvasSizeDirty = canvasWidthInput !== canvasWidthString || canvasHeightInput !== canvasHeightString;
 
   // Ensure inputText has entries for input neurons (and only them)
   useEffect(() => {
@@ -711,6 +828,13 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const canResume = !isAnimating && hasAnimation && animationIndex < frameTotal - 1;
   const freezeDisabled = isAnimating ? false : !canResume;
   const canJumpToEnd = hasAnimation && animationIndex !== frameTotal - 1;
+  const animateButtonLabel = isAnimating ? "Freeze" : canResume ? "Resume" : "Animate";
+  const animateButtonAction = isAnimating ? pauseAnimation : canResume ? resumeAnimation : animateSpikes;
+  const animateButtonTitle = isAnimating
+    ? "Pause spike propagation animation"
+    : canResume
+    ? "Resume spike propagation animation"
+    : "Play spike propagation animation";
   const currentFrame = animationIndex >= 0 ? animationFrames[animationIndex] : null;
   const currentWaveDisplay = currentFrame ? currentFrame.wave + 1 : 0;
   const formattedClock = Number.isFinite(animationClock) ? animationClock.toFixed(2) : "0.00";
@@ -767,6 +891,8 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const [showDynamicsHeaders, setShowDynamicsHeaders] = useState<boolean>(true);
   const [showOutputPotentials, setShowOutputPotentials] = useState<boolean>(false);
   const [includeColors, setIncludeColors] = useState<boolean>(true);
+  const [includeAnimationCounterInPdf, setIncludeAnimationCounterInPdf] = useState<boolean>(false);
+  const [isExportingAnimationPdfs, setIsExportingAnimationPdfs] = useState<boolean>(false);
 
   const openDynamicsPanelForNeuron = useCallback(
     (neuronId: string) => {
@@ -2995,6 +3121,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         showDynamicsHeaders,
         showOutputPotentials,
         includeColors,
+        includeAnimationCounterInPdf,
       },
       modules: modules.map((module) => ({
         id: module.id,
@@ -3192,10 +3319,17 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         } else {
           setIncludeColors(true);
         }
+        const includeCounterValue = dynamicsSettings.includeAnimationCounterInPdf;
+        if (typeof includeCounterValue === "boolean") {
+          setIncludeAnimationCounterInPdf(includeCounterValue);
+        } else {
+          setIncludeAnimationCounterInPdf(false);
+        }
       } else {
         setShowDynamicsHeaders(true);
         setShowOutputPotentials(false);
         setIncludeColors(true);
+        setIncludeAnimationCounterInPdf(false);
       }
 
       if (data && typeof data.inputs === "object") {
@@ -3319,6 +3453,124 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     }
   }
 
+  async function exportAnimationPdfs() {
+    if (isExportingAnimationPdfs) return;
+    const frames = animationFramesRef.current;
+    if (!frames.length) {
+      alert("Run an animation before exporting frame PDFs.");
+      return;
+    }
+    if (typeof window.showDirectoryPicker !== "function") {
+      alert("Your browser does not support selecting folders for export.");
+      return;
+    }
+    const container = canvasExportRef.current;
+    if (!container) {
+      alert("Canvas view unavailable. Please try again.");
+      return;
+    }
+    if (!(container.querySelector("svg") instanceof SVGSVGElement)) {
+      alert("Canvas SVG could not be located.");
+      return;
+    }
+    setIsExportingAnimationPdfs(true);
+    const exportWidth = Math.max(200, canvasWidth);
+    const exportHeight = Math.max(200, canvasHeight);
+    const wasAnimating = isAnimatingRef.current;
+    const previousIndex = animationIndexRef.current;
+    pauseAnimation();
+
+    const formatTimeToken = (time: number) => {
+      return time.toFixed(3).replace(/\.?0+$/, "").replace(/\./g, "p") || "0";
+    };
+
+    try {
+      const directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+      if (!directoryHandle) {
+        return;
+      }
+      let exportedCount = 0;
+      for (let i = 0; i < frames.length; i++) {
+        const frame = frames[i];
+        displayFrame(i);
+        await waitForNextFrame();
+
+        const currentSvg = container.querySelector("svg");
+        if (!(currentSvg instanceof SVGSVGElement)) {
+          continue;
+        }
+        const clone = prepareCanvasSvgClone(currentSvg, exportWidth, exportHeight);
+
+        const pdf = new jsPDF({
+          orientation: exportWidth >= exportHeight ? "landscape" : "portrait",
+          unit: "px",
+          format: [exportWidth, exportHeight],
+        });
+        pdf.setFillColor(255, 255, 255);
+        pdf.rect(0, 0, exportWidth, exportHeight, "F");
+        await pdf.svg(clone, {
+          x: 0,
+          y: 0,
+          width: exportWidth,
+          height: exportHeight,
+        });
+
+        if (includeAnimationCounterInPdf) {
+          const overlayParts = [
+            `t = ${frame.time.toFixed(3)}s`,
+            `Step ${i + 1}/${frames.length}`,
+            `Wave ${frame.wave + 1}`,
+          ];
+          const overlayText = overlayParts.join(" • ");
+          const fontSize = 14;
+          pdf.setFontSize(fontSize);
+          const paddingX = 18;
+          const paddingY = 10;
+          const textWidth = pdf.getTextWidth(overlayText);
+          const overlayHeight = fontSize + paddingY * 2;
+          const overlayWidth = textWidth + paddingX * 2;
+          const overlayX = Math.max(16, exportWidth - overlayWidth - 16);
+          const overlayY = exportHeight - overlayHeight - 16;
+          pdf.setFillColor(0, 0, 0);
+          pdf.roundedRect(overlayX, overlayY, overlayWidth, overlayHeight, 12, 12, "F");
+          pdf.setTextColor(255, 255, 255);
+          pdf.text(overlayText, overlayX + paddingX, overlayY + overlayHeight / 2, {
+            baseline: "middle",
+          });
+        }
+
+        const stepToken = String(i + 1).padStart(3, "0");
+        const timeToken = formatTimeToken(frame.time);
+        const waveToken = String(frame.wave + 1).padStart(2, "0");
+        const fileName = `steps_${stepToken}_time_${timeToken}_wave_${waveToken}.pdf`;
+
+        const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(pdf.output("arraybuffer"));
+        await writable.close();
+        exportedCount += 1;
+      }
+      if (exportedCount > 0) {
+        alert(`Exported ${exportedCount} PDF${exportedCount === 1 ? "" : "s"} to "${directoryHandle.name}".`);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        console.error(error);
+        alert("Failed to export animation PDFs. Please try again.");
+      }
+    } finally {
+      if (previousIndex >= 0) {
+        displayFrame(previousIndex);
+      } else {
+        displayNoFrame();
+      }
+      if (wasAnimating) {
+        resumeAnimation();
+      }
+      setIsExportingAnimationPdfs(false);
+    }
+  }
+
   function exportCanvasPdf() {
     const container = canvasExportRef.current;
     if (!container) {
@@ -3350,6 +3602,16 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     clone.style.height = `${exportHeight}px`;
 
     const serializedSvg = clone.outerHTML;
+    const showCounterOverlay = includeAnimationCounterInPdf && hasAnimation;
+    const overlayTextParts: string[] = [];
+    if (showCounterOverlay) {
+      overlayTextParts.push(`t = ${formattedClock}s`);
+      overlayTextParts.push(`Step ${frameIndexDisplay}/${frameTotal}`);
+      if (currentFrame) {
+        overlayTextParts.push(`Wave ${currentWaveDisplay}`);
+      }
+    }
+    const overlayHtml = showCounterOverlay ? `<div class="overlay">${overlayTextParts.join(" • ")}</div>` : "";
 
     const html = `<!DOCTYPE html>
 <html>
@@ -3361,13 +3623,18 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       * { box-sizing: border-box; }
       html, body { margin: 0; padding: 0; }
       body { background: #ffffff; width: ${exportWidth}px; height: ${exportHeight}px; display: flex; align-items: center; justify-content: center; font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      svg { width: ${exportWidth}px; height: ${exportHeight}px; }
+      .export-shell { position: relative; width: ${exportWidth}px; height: ${exportHeight}px; }
+      .export-shell svg { width: 100%; height: 100%; display: block; }
+      .export-shell .overlay { position: absolute; right: 16px; bottom: 16px; background: rgba(0, 0, 0, 0.75); color: #ffffff; font-size: 12px; padding: 6px 12px; border-radius: 9999px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25); font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       svg, svg * { font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; }
       @page { size: ${exportWidth}px ${exportHeight}px; margin: 0; }
     </style>
   </head>
   <body>
-    ${serializedSvg}
+    <div class="export-shell">
+      ${serializedSvg}
+      ${overlayHtml}
+    </div>
     <script>
       window.addEventListener('load', function () {
         setTimeout(function () {
@@ -3912,15 +4179,14 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 </button>
                 <button
                   className="px-3 py-1 rounded-full border"
-                  onClick={animateSpikes}
-                  disabled={isAnimating}
-                  title="Play spike propagation animation"
+                  onClick={animateButtonAction}
+                  title={animateButtonTitle}
                 >
-                  {isAnimating ? "Animating..." : "Animate"}
+                  {animateButtonLabel}
                 </button>
-                {isAnimating && (
+                {hasAnimation && (
                   <button className="px-3 py-1 rounded-full border" onClick={stopAnimation}>
-                    Stop
+                    {isAnimating ? "Stop" : "Hide"}
                   </button>
                 )}
                 {/* <button className="px-3 py-1 rounded-full border" onClick={clearSimulation}>
@@ -3937,21 +4203,31 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               <input
                 className="col-span-2 px-2 py-1 border rounded-lg"
                 type="number"
-                min={200}
+                min={MIN_CANVAS_DIMENSION}
                 step={50}
-                value={canvasWidth}
-                onChange={(e) => setCanvasWidth(Math.max(200, Number(e.target.value)))}
+                value={canvasWidthInput}
+                onChange={(e) => setCanvasWidthInput(e.target.value)}
+                onKeyDown={handleCanvasSizeKeyDown}
               />
 
               <label className="col-span-1">Height</label>
               <input
                 className="col-span-2 px-2 py-1 border rounded-lg"
                 type="number"
-                min={200}
+                min={MIN_CANVAS_DIMENSION}
                 step={50}
-                value={canvasHeight}
-                onChange={(e) => setCanvasHeight(Math.max(200, Number(e.target.value)))}
+                value={canvasHeightInput}
+                onChange={(e) => setCanvasHeightInput(e.target.value)}
+                onKeyDown={handleCanvasSizeKeyDown}
               />
+              <button
+                type="button"
+                className="col-span-3 px-3 py-1 rounded-full border"
+                onClick={applyCanvasSize}
+                disabled={!isCanvasSizeDirty}
+              >
+                Apply
+              </button>
             </div>
           </div>
 
@@ -3960,6 +4236,20 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             <div className="flex flex-wrap gap-2">
               <button className="px-3 py-1 rounded-full border" onClick={exportCanvasPdf}>
                 Export Canvas as PDF
+              </button>
+              <button
+                className="px-3 py-1 rounded-full border"
+                onClick={exportAnimationPdfs}
+                disabled={!hasAnimation || isExportingAnimationPdfs}
+                title={
+                  hasAnimation
+                    ? isExportingAnimationPdfs
+                      ? "Generating PDFs for each animation step..."
+                      : "Select a folder to export a PDF for each animation frame."
+                    : "Run a spike animation to enable per-frame PDF export."
+                }
+              >
+                {isExportingAnimationPdfs ? "Exporting..." : "Export Animation PDFs"}
               </button>
               <button className="px-3 py-1 rounded-full border" onClick={exportState}>
                 Export JSON
@@ -3979,6 +4269,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 onChange={onImportInputChange}
               />
             </div>
+            <label
+              className={`mt-2 flex items-center gap-2 text-xs text-gray-600 ${hasAnimation ? "" : "opacity-60"}`}
+              title={
+                hasAnimation
+                  ? "Toggle whether the animation counter overlay is included in PDF canvas exports."
+                  : "Run a simulation with spike animation to enable the counter overlay in PDF exports."
+              }
+            >
+              <input
+                type="checkbox"
+                className="accent-black"
+                checked={includeAnimationCounterInPdf}
+                disabled={!hasAnimation}
+                onChange={(e) => setIncludeAnimationCounterInPdf(e.target.checked)}
+              />
+              Include animation counter overlay in PDF
+            </label>
           </div>
               
           {/* Input spike editors */}
@@ -4043,7 +4350,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         </div>
         {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
         <div ref={rasterExportRef}>
-          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} />
+          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
           
         </div>
         </div>
@@ -4403,7 +4710,6 @@ function CanvasView({
       }
     | null
   >(null);
-  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth <= 640 : false));
 
   function coord(e: React.PointerEvent | React.MouseEvent) {
     const svg = svgRef.current!;
@@ -4441,7 +4747,6 @@ function CanvasView({
   const R = NODE_RADIUS; // node radius
   const viewWidth = Math.max(200, canvasWidth);
   const viewHeight = Math.max(200, canvasHeight);
-  const svgDisplayHeight = Math.max(320, viewHeight + 40);
   const idPrefix = useMemo(() => uid("canvas"), []);
   const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
   const highlightedEdgeSet = useMemo(() => new Set(highlightedEdgeIds), [highlightedEdgeIds]);
@@ -4458,15 +4763,6 @@ function CanvasView({
       }
     | null
   >(null);
-
-  useEffect(() => {
-    function handleResize() {
-      setIsMobile(window.innerWidth <= 640);
-    }
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
 
   function finalizeMarqueeSelection() {
     setMarquee((prev) => {
@@ -4489,14 +4785,18 @@ function CanvasView({
   return (
     <div
       className="rounded-2xl border shadow-sm bg-white select-none mx-auto w-full"
-      style={{ maxWidth: `${viewWidth}px` }}
+      style={{
+        boxSizing: "border-box",
+        maxWidth: viewWidth + CANVAS_FRAME_PADDING * 2,
+        padding: CANVAS_FRAME_PADDING,
+      }}
     >
       <svg
         ref={svgRef}
         viewBox={`0 0 ${viewWidth} ${viewHeight}`}
         style={{
           width: "100%",
-          height: isMobile ? undefined : svgDisplayHeight,
+          height: "auto",
           touchAction: "none",
           display: "block",
         }}
@@ -4710,7 +5010,17 @@ function CanvasView({
             </g>
           );
         })}
-        <rect x={0} y={0} width={viewWidth} height={viewHeight} fill={`url(#${idPrefix}-grid)`} pointerEvents="none" />
+        <rect
+          x={0}
+          y={0}
+          width={viewWidth}
+          height={viewHeight}
+          fill={`url(#${idPrefix}-grid)`}
+          stroke="#838383"
+          strokeOpacity="0.5"
+          strokeWidth={1}
+          pointerEvents="none"
+        />
 
         {/* edges */}
         {edges.map((e) => {
@@ -5435,8 +5745,21 @@ function ModuleNeuronInspector({
 
 // ------------------------ Raster Plot ------------------------
 
-function RasterPlot({ neurons, spikeTrains, T }: { neurons: Neuron[]; spikeTrains: Record<string, number[]>; T: number }) {
-  const height = Math.max(120, 20 * neurons.length + 40);
+function RasterPlot({
+  neurons,
+  spikeTrains,
+  T,
+  selectedNeuronIds,
+}: {
+  neurons: Neuron[];
+  spikeTrains: Record<string, number[]>;
+  T: number;
+  selectedNeuronIds: string[];
+}) {
+  const selectedSet = useMemo(() => new Set(selectedNeuronIds), [selectedNeuronIds]);
+  const displayNeurons = selectedNeuronIds.length ? neurons.filter((n) => selectedSet.has(n.id)) : neurons;
+
+  const height = Math.max(120, 20 * displayNeurons.length + 40);
   const width = 800;
   const padLeft = 60,
     padRight = 20,
@@ -5469,7 +5792,7 @@ function RasterPlot({ neurons, spikeTrains, T }: { neurons: Neuron[]; spikeTrain
       })}
 
       {/* Rows */}
-      {neurons.map((n, row) => {
+      {displayNeurons.map((n, row) => {
         const y = padTop + 20 + row * 20;
         const color = n.role === "input" ? "#60a5fa" : n.role === "output" ? "#f59e0b" : "#a78bfa";
         const spikes = (spikeTrains[n.id] || []).filter((s) => s <= T);
