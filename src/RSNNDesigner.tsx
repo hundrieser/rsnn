@@ -193,6 +193,7 @@ const DEFAULT_EDGE_WEIGHT = 2;
 const DEFAULT_CANVAS_WIDTH = 800;
 const DEFAULT_CANVAS_HEIGHT = 400;
 const MIN_CANVAS_DIMENSION = 200;
+const CANVAS_FRAME_PADDING = 20;
 
 const ROLE_FILL: Record<Role, string> = {
   input: "#ffedb4",
@@ -4479,7 +4480,6 @@ function CanvasView({
       }
     | null
   >(null);
-  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth <= 640 : false));
 
   function coord(e: React.PointerEvent | React.MouseEvent) {
     const svg = svgRef.current!;
@@ -4517,7 +4517,6 @@ function CanvasView({
   const R = NODE_RADIUS; // node radius
   const viewWidth = Math.max(200, canvasWidth);
   const viewHeight = Math.max(200, canvasHeight);
-  const svgDisplayHeight = Math.max(320, viewHeight + 40);
   const idPrefix = useMemo(() => uid("canvas"), []);
   const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
   const highlightedEdgeSet = useMemo(() => new Set(highlightedEdgeIds), [highlightedEdgeIds]);
@@ -4534,15 +4533,6 @@ function CanvasView({
       }
     | null
   >(null);
-
-  useEffect(() => {
-    function handleResize() {
-      setIsMobile(window.innerWidth <= 640);
-    }
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
 
   function finalizeMarqueeSelection() {
     setMarquee((prev) => {
@@ -4565,14 +4555,18 @@ function CanvasView({
   return (
     <div
       className="rounded-2xl border shadow-sm bg-white select-none mx-auto w-full"
-      style={{ maxWidth: `${viewWidth}px` }}
+      style={{
+        boxSizing: "border-box",
+        maxWidth: viewWidth + CANVAS_FRAME_PADDING * 2,
+        padding: CANVAS_FRAME_PADDING,
+      }}
     >
       <svg
         ref={svgRef}
         viewBox={`0 0 ${viewWidth} ${viewHeight}`}
         style={{
           width: "100%",
-          height: isMobile ? undefined : svgDisplayHeight,
+          height: "auto",
           touchAction: "none",
           display: "block",
         }}
