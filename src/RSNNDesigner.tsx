@@ -282,6 +282,255 @@ function sanitizeWaypoints(points?: Array<Point>): Array<Point> {
     .filter((pt): pt is Point => pt !== null);
 }
 
+const RSNN_CLIPBOARD_HEADER = "rsnn-clipboard";
+const RSNN_CLIPBOARD_VERSION = 1;
+
+type SelectionClipboardGroup = {
+  nodeIds: string[];
+  hue: number;
+  label: string;
+  labelVisible: boolean;
+  compression: GroupCompressionState | null;
+};
+
+type SelectionClipboardMainPayload = {
+  neurons: Neuron[];
+  edges: Edge[];
+  inputTexts: Record<string, string>;
+  groups: SelectionClipboardGroup[];
+};
+
+type SelectionClipboardModulePayload = {
+  neurons: Neuron[];
+  edges: Edge[];
+  inputIds: string[];
+  outputIds: string[];
+};
+
+type RSNNClipboardEnvelope =
+  | {
+      header: typeof RSNN_CLIPBOARD_HEADER;
+      version: typeof RSNN_CLIPBOARD_VERSION;
+      kind: "main";
+      payload: SelectionClipboardMainPayload;
+    }
+  | {
+      header: typeof RSNN_CLIPBOARD_HEADER;
+      version: typeof RSNN_CLIPBOARD_VERSION;
+      kind: "module";
+      payload: SelectionClipboardModulePayload;
+    };
+
+function sanitizeClipboardPoint(value: unknown): Point | null {
+  if (!value || typeof value !== "object") return null;
+  const point = value as Record<string, unknown>;
+  const x = Number(point.x);
+  const y = Number(point.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function sanitizeClipboardNeuron(value: unknown): Neuron | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const id = typeof raw.id === "string" ? raw.id : null;
+  const role = raw.role === "input" || raw.role === "hidden" || raw.role === "output" ? (raw.role as Role) : null;
+  const x = Number(raw.x);
+  const y = Number(raw.y);
+  if (!id || !role || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const neuron: Neuron = {
+    id,
+    label: typeof raw.label === "string" ? raw.label : "N",
+    role,
+    x,
+    y,
+    labelVisible: raw.labelVisible === true,
+    labelOffsetX: Number.isFinite(raw.labelOffsetX) ? Number(raw.labelOffsetX) : 0,
+    labelOffsetY: Number.isFinite(raw.labelOffsetY) ? Number(raw.labelOffsetY) : DEFAULT_LABEL_OFFSET_Y,
+  };
+  return neuron;
+}
+
+function sanitizeClipboardEdge(value: unknown): Edge | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const id = typeof raw.id === "string" ? raw.id : null;
+  const sourceId = typeof raw.sourceId === "string" ? raw.sourceId : null;
+  const targetId = typeof raw.targetId === "string" ? raw.targetId : null;
+  const weight = Number(raw.weight);
+  if (!id || !sourceId || !targetId || !Number.isFinite(weight)) return null;
+  let points: Point[] | undefined;
+  if (Array.isArray(raw.points)) {
+    const sanitized = raw.points.map(sanitizeClipboardPoint).filter((pt): pt is Point => pt !== null);
+    if (sanitized.length) points = sanitized;
+  }
+  const edge: Edge = { id, sourceId, targetId, weight };
+  if (points && points.length) {
+    edge.points = points;
+  }
+  return edge;
+}
+
+function sanitizeClipboardGroup(value: unknown): SelectionClipboardGroup | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (!Array.isArray(raw.nodeIds)) return null;
+  const nodeIds = raw.nodeIds.filter((id): id is string => typeof id === "string");
+  if (!nodeIds.length) return null;
+  let compression: GroupCompressionState | null = null;
+  if (raw.compression && typeof raw.compression === "object") {
+    const comp = raw.compression as Record<string, unknown>;
+    const center = sanitizeClipboardPoint(comp.center);
+    const nodesRaw = comp.nodes && typeof comp.nodes === "object" ? (comp.nodes as Record<string, unknown>) : null;
+    const edgePointsRaw =
+      comp.edgePoints && typeof comp.edgePoints === "object" ? (comp.edgePoints as Record<string, unknown>) : null;
+    if (center && nodesRaw) {
+      const nodes: GroupCompressionState["nodes"] = {};
+      for (const [nodeId, nodeData] of Object.entries(nodesRaw)) {
+        if (!nodeData || typeof nodeData !== "object") continue;
+        const nd = nodeData as Record<string, unknown>;
+        const x = Number(nd.x);
+        const y = Number(nd.y);
+        const labelOffsetX = Number(nd.labelOffsetX);
+        const labelOffsetY = Number(nd.labelOffsetY);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(labelOffsetX) || !Number.isFinite(labelOffsetY)) {
+          continue;
+        }
+        nodes[nodeId] = {
+          x,
+          y,
+          labelOffsetX,
+          labelOffsetY,
+          labelVisible: nd.labelVisible === true,
+        };
+      }
+      const edgePoints: GroupCompressionState["edgePoints"] = {};
+      if (edgePointsRaw) {
+        for (const [edgeId, points] of Object.entries(edgePointsRaw)) {
+          if (!Array.isArray(points)) continue;
+          const sanitized = points.map(sanitizeClipboardPoint).filter((pt): pt is Point => pt !== null);
+          if (sanitized.length) {
+            edgePoints[edgeId] = sanitized;
+          }
+        }
+      }
+      compression = {
+        center,
+        nodes,
+        edgePoints,
+        labelVisibleBefore: comp.labelVisibleBefore === true,
+      };
+    }
+  }
+  return {
+    nodeIds,
+    hue: Number.isFinite(raw.hue) ? Number(raw.hue) : 0,
+    label: typeof raw.label === "string" ? raw.label : "",
+    labelVisible: raw.labelVisible === true,
+    compression,
+  };
+}
+
+function sanitizeMainClipboardPayload(raw: unknown): SelectionClipboardMainPayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  const neurons = Array.isArray(data.neurons)
+    ? data.neurons.map(sanitizeClipboardNeuron).filter((n): n is Neuron => n !== null)
+    : [];
+  if (!neurons.length) return null;
+  const edges = Array.isArray(data.edges)
+    ? data.edges.map(sanitizeClipboardEdge).filter((e): e is Edge => e !== null)
+    : [];
+  const groups = Array.isArray(data.groups)
+    ? data.groups.map(sanitizeClipboardGroup).filter((g): g is SelectionClipboardGroup => g !== null)
+    : [];
+  const inputTextsRaw = data.inputTexts;
+  const inputTexts: Record<string, string> = {};
+  if (inputTextsRaw && typeof inputTextsRaw === "object") {
+    for (const [key, value] of Object.entries(inputTextsRaw as Record<string, unknown>)) {
+      if (typeof key === "string" && typeof value === "string") {
+        inputTexts[key] = value;
+      }
+    }
+  }
+  return { neurons, edges, inputTexts, groups };
+}
+
+function sanitizeModuleClipboardPayload(raw: unknown): SelectionClipboardModulePayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  const neurons = Array.isArray(data.neurons)
+    ? data.neurons.map(sanitizeClipboardNeuron).filter((n): n is Neuron => n !== null)
+    : [];
+  if (!neurons.length) return null;
+  const edges = Array.isArray(data.edges)
+    ? data.edges.map(sanitizeClipboardEdge).filter((e): e is Edge => e !== null)
+    : [];
+  const inputIds = Array.isArray(data.inputIds)
+    ? data.inputIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const outputIds = Array.isArray(data.outputIds)
+    ? data.outputIds.filter((id): id is string => typeof id === "string")
+    : [];
+  return { neurons, edges, inputIds, outputIds };
+}
+
+function decodeClipboardEnvelope(text: string): RSNNClipboardEnvelope | null {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") return null;
+    const envelope = parsed as Record<string, unknown>;
+    if (envelope.header !== RSNN_CLIPBOARD_HEADER || envelope.version !== RSNN_CLIPBOARD_VERSION) return null;
+    if (envelope.kind === "main") {
+      const payload = sanitizeMainClipboardPayload(envelope.payload);
+      if (!payload) return null;
+      return {
+        header: RSNN_CLIPBOARD_HEADER,
+        version: RSNN_CLIPBOARD_VERSION,
+        kind: "main",
+        payload,
+      };
+    }
+    if (envelope.kind === "module") {
+      const payload = sanitizeModuleClipboardPayload(envelope.payload);
+      if (!payload) return null;
+      return {
+        header: RSNN_CLIPBOARD_HEADER,
+        version: RSNN_CLIPBOARD_VERSION,
+        kind: "module",
+        payload,
+      };
+    }
+  } catch (error) {
+    return null;
+  }
+  return null;
+}
+
+async function writeClipboardEnvelope(envelope: RSNNClipboardEnvelope): Promise<void> {
+  if (typeof navigator === "undefined") return;
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.writeText !== "function") return;
+  try {
+    await clipboard.writeText(JSON.stringify(envelope));
+  } catch {
+    // Ignore clipboard write failures; user gesture still keeps in-app buffer.
+  }
+}
+
+async function readClipboardEnvelope(): Promise<RSNNClipboardEnvelope | null> {
+  if (typeof navigator === "undefined") return null;
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.readText !== "function") return null;
+  try {
+    const text = await clipboard.readText();
+    return decodeClipboardEnvelope(text);
+  } catch {
+    return null;
+  }
+}
+
 function buildEdgePoints(edge: Edge, source: Neuron, target: Neuron): Point[] {
   const waypoints = sanitizeWaypoints(edge.points);
   const firstTarget = waypoints[0] ?? { x: target.x, y: target.y };
@@ -667,24 +916,8 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const [isCanvasFullScreen, setIsCanvasFullScreen] = useState<boolean>(false);
   const [showCleanDialog, setShowCleanDialog] = useState<boolean>(false);
 
-  const copyBufferRef = useRef<{
-    neurons: Neuron[];
-    edges: Edge[];
-    inputTexts: Record<string, string>;
-    groups: Array<{
-      nodeIds: string[];
-      hue: number;
-      label: string;
-      labelVisible: boolean;
-      compression: GroupCompressionState | null;
-    }>;
-  } | null>(null);
-  const moduleCopyBufferRef = useRef<{
-    neurons: Neuron[];
-    edges: Edge[];
-    inputIds: string[];
-    outputIds: string[];
-  } | null>(null);
+  const copyBufferRef = useRef<SelectionClipboardMainPayload | null>(null);
+  const moduleCopyBufferRef = useRef<SelectionClipboardModulePayload | null>(null);
 
   const canvasWidthString = useMemo(() => String(canvasWidth), [canvasWidth]);
   const canvasHeightString = useMemo(() => String(canvasHeight), [canvasHeight]);
@@ -1625,17 +1858,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       .map((e) => ({ ...e, points: sanitizeWaypoints(e.points) }));
     const inputs = moduleInputIds.filter((id) => selectedSet.has(id));
     const outputs = moduleOutputIds.filter((id) => selectedSet.has(id));
-    moduleCopyBufferRef.current = {
+    const buffer: SelectionClipboardModulePayload = {
       neurons: nodes,
       edges: copiedEdges,
       inputIds: inputs,
       outputIds: outputs,
     };
+    moduleCopyBufferRef.current = buffer;
+    void writeClipboardEnvelope({
+      header: RSNN_CLIPBOARD_HEADER,
+      version: RSNN_CLIPBOARD_VERSION,
+      kind: "module",
+      payload: buffer,
+    });
     return true;
   }
 
-  function pasteModuleSelection(): boolean {
-    const buffer = moduleCopyBufferRef.current;
+  function pasteModuleSelectionFromBuffer(buffer: SelectionClipboardModulePayload | null | undefined): boolean {
     if (!buffer || !buffer.neurons.length) return false;
     const offsetX = GRID_SIZE * 3;
     const offsetY = GRID_SIZE * 3;
@@ -1706,6 +1945,20 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       setModuleOutputIds((prev) => Array.from(new Set([...prev, ...newOutputIds])));
     }
     return true;
+  }
+
+  function pasteModuleSelection(): boolean {
+    return pasteModuleSelectionFromBuffer(moduleCopyBufferRef.current);
+  }
+
+  async function pasteModuleSelectionFromClipboard(): Promise<boolean> {
+    const envelope = await readClipboardEnvelope();
+    if (envelope?.kind === "module") {
+      moduleCopyBufferRef.current = envelope.payload;
+      const applied = pasteModuleSelectionFromBuffer(envelope.payload);
+      if (applied) return true;
+    }
+    return pasteModuleSelectionFromBuffer(moduleCopyBufferRef.current);
   }
 
   function handleModuleNodePointerDown(
@@ -3062,12 +3315,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         inputs[node.id] = inputText[node.id] ?? "";
       }
     }
-    copyBufferRef.current = { neurons: nodes, edges: copiedEdges, inputTexts: inputs, groups: copiedGroups };
+    const buffer: SelectionClipboardMainPayload = {
+      neurons: nodes,
+      edges: copiedEdges,
+      inputTexts: inputs,
+      groups: copiedGroups,
+    };
+    copyBufferRef.current = buffer;
+    void writeClipboardEnvelope({
+      header: RSNN_CLIPBOARD_HEADER,
+      version: RSNN_CLIPBOARD_VERSION,
+      kind: "main",
+      payload: buffer,
+    });
     return true;
   }
 
-  function pasteSelection(): boolean {
-    const buffer = copyBufferRef.current;
+  function pasteSelectionFromBuffer(buffer: SelectionClipboardMainPayload | null | undefined): boolean {
     if (!buffer || !buffer.neurons.length) return false;
     if (isRestoringRef.current) return false;
     recordSnapshot();
@@ -3239,6 +3503,20 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     return true;
   }
 
+  function pasteSelection(): boolean {
+    return pasteSelectionFromBuffer(copyBufferRef.current);
+  }
+
+  async function pasteSelectionFromClipboard(): Promise<boolean> {
+    const envelope = await readClipboardEnvelope();
+    if (envelope?.kind === "main") {
+      copyBufferRef.current = envelope.payload;
+      const applied = pasteSelectionFromBuffer(envelope.payload);
+      if (applied) return true;
+    }
+    return pasteSelectionFromBuffer(copyBufferRef.current);
+  }
+
   useEffect(() => {
     function isEditable(target: EventTarget | null): boolean {
       const el = target as HTMLElement | null;
@@ -3274,9 +3552,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           activeSelectionContext === "module" ? copyModuleSelection() : copySelection();
         if (handled) event.preventDefault();
       } else if ((event.metaKey || event.ctrlKey) && key === "v") {
-        const handled =
-          activeSelectionContext === "module" ? pasteModuleSelection() : pasteSelection();
-        if (handled) event.preventDefault();
+        event.preventDefault();
+        if (activeSelectionContext === "module") {
+          void pasteModuleSelectionFromClipboard();
+        } else {
+          void pasteSelectionFromClipboard();
+        }
       } else if ((event.metaKey || event.ctrlKey) && key === "g" && !event.shiftKey) {
         let handled = false;
         if (activeSelectionContext !== "module") {
@@ -3322,8 +3603,8 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     collapseSelectedNeuron,
     moduleSelectedEdgeId,
     moduleSelectedNodeIds,
-    pasteModuleSelection,
-    pasteSelection,
+    pasteModuleSelectionFromClipboard,
+    pasteSelectionFromClipboard,
     removeModuleSelectedEdgeWaypoint,
     removeSelectedEdgeWaypoint,
     selectedEdgeId,
