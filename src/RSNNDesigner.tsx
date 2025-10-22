@@ -4369,30 +4369,6 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         </div>
         </div>
 
-              <br></br><br></br>
-        {/* Raster plot */}
-        <div className="p-3 rounded-2xl border shadow-sm bg-white">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-lg font-semibold">Spike Raster</div>
-          <div className="text-xs text-gray-500">Strict threshold {">"} 1; h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}</div>
-        </div>
-        {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
-        <div ref={rasterExportRef}>
-          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
-          
-        </div>
-        </div>
-
-        {/* <div className="p-3 rounded-2xl border shadow-sm bg-white">
-        <div className="flex items-center justify-between mb-2">
-          <div className="font-medium">Potential Traces</div>
-          <div className="text-xs text-gray-500">decay shown for h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}</div>
-        </div>
-        <div ref={potentialExportRef}>
-          <PotentialPlot neurons={hiddenNeurons} series={sim?.potentialSeries || null} T={T} />
-        </div>
-        </div> */}
-
         <div className="border-t border-gray-200 my-6" />
         <div className="space-y-4">
           <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
@@ -4606,6 +4582,34 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             </div>
           )}
         </div>
+
+        
+
+              <br></br><br></br>
+        {/* Raster plot */}
+        <div className="p-3 rounded-2xl border shadow-sm bg-white">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-lg font-semibold">Spike Raster</div>
+          <div className="text-xs text-gray-500">Strict threshold {">"} 1; h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}</div>
+        </div>
+        {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
+        <div ref={rasterExportRef}>
+          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
+          
+        </div>
+        </div>
+
+        {/* <div className="p-3 rounded-2xl border shadow-sm bg-white">
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-medium">Potential Traces</div>
+          <div className="text-xs text-gray-500">decay shown for h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}</div>
+        </div>
+        <div ref={potentialExportRef}>
+          <PotentialPlot neurons={hiddenNeurons} series={sim?.potentialSeries || null} T={T} />
+        </div>
+        </div> */}
+
+        
       </div>
     </div>
   );
