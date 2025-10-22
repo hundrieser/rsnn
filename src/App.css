@@ -99,6 +99,7 @@ a {
 
 /* Spacing helpers */
 .mx-auto { margin-left: auto; margin-right: auto; }
+.mr-8 { margin-right: 2rem; }
 .ml-auto { margin-left: auto; }
 .ml-2 { margin-left: 0.5rem; }
 .mx-1 { margin-left: 0.25rem; margin-right: 0.25rem; }

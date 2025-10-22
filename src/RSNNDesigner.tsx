@@ -3430,7 +3430,30 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           .filter((module: Module | null): module is Module => module !== null);
       }
 
-      setModules(importedModules);
+      if (importedModules.length) {
+        setModules((prevModules) => {
+          if (!importedModules.length) return prevModules;
+          const existingIds = new Set(prevModules.map((module) => module.id));
+          const existingNames = new Set(prevModules.map((module) => module.name));
+          const appended = importedModules.map((module) => {
+            let nextId = module.id;
+            while (existingIds.has(nextId)) {
+              nextId = uid("module");
+            }
+            existingIds.add(nextId);
+
+            const baseName = (module.name || "").trim() || "Module";
+            const nextName = uniqueLabel(baseName, existingNames);
+            return {
+              ...module,
+              id: nextId,
+              name: nextName,
+            };
+          });
+          if (!appended.length) return prevModules;
+          return [...prevModules, ...appended];
+        });
+      }
       openModuleEditor(null);
 
       setSelectedNodeIds([]);
@@ -3758,7 +3781,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     >
       <div className="mx-auto max-w-6xl flex flex-col gap-3 page-shell">
         <header className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl font-bold min-w-0">Recurrent Spiking Neural Network Canvas</h1>
+          <h1 className="text-xl font-bold min-w-0">Spiking Neural Network Simulator      </h1>
           {onToggleTheme ? (
             <div className="theme-toggle-wrapper">
               <button className="theme-toggle-button" onClick={onToggleTheme} type="button">
@@ -3766,6 +3789,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               </button>
             </div>
           ) : null}
+          <span className="ml-auto" />
           <span className="ml-auto" />
           <button
             className={`px-3 py-1 rounded-full border transition ${
@@ -3835,17 +3859,21 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               }}
             />
           </label>
-            <button
-            className="px-3 py-1 rounded-full border"
-            onClick={() => setShowCleanDialog(true)}
-            title="Remove all neurons, edges, and groups from the canvas"
-          >
-            Clean canvas
-          </button>
-          <div className="h-6 w-px bg-gray-300 mx-1" />
-          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("input")}>+ Input</button>
-          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("hidden")}>+ Hidden</button>
-          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("output")}>+ Output</button>
+          <br>
+          </br><button
+              className="px-3 py-1 rounded-full border"
+              onClick={() => setShowCleanDialog(true)}
+              title="Remove all neurons, edges, and groups from the canvas"
+            >
+              Clean canvas
+            </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="h-6 w-px bg-gray-300 mx-1" />
+            <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("input")}>+ Input</button>
+            
+            <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("hidden")}>+ Hidden</button>
+            <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("output")}>+ Output</button>
+          </div>
           <button
             className="px-3 py-1 rounded-full border"
             onClick={() => deleteSelected()}
@@ -5039,6 +5067,7 @@ function CanvasView({
           const isRecent = recentEdgeSet.has(e.id);
           const strokeColor = isRecent ? "#f97316" : isHighlight ? "#facc15" : baseColor;
           const strokeWidth = isRecent ? EDGE_STROKE_WIDTH + 1.4 : isHighlight ? EDGE_STROKE_WIDTH + 1.0 : isSel ? EDGE_STROKE_WIDTH + 0.6 : EDGE_STROKE_WIDTH;
+          const strokeDasharray = includeColors ? undefined : weightToDashPattern(e.weight);
           const arrowTip = pathPoints[pathPoints.length - 1];
           const arrowHitRadius = Math.max(strokeWidth * 1.4, 7);
           const labelPoint = pathMidpoint(pathPoints);
@@ -5077,6 +5106,7 @@ function CanvasView({
                 d={pathD}
                 stroke={strokeColor}
                 strokeWidth={strokeWidth}
+                strokeDasharray={strokeDasharray}
                 fill="none"
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -5962,6 +5992,14 @@ function lerpColor(from: [number, number, number], to: [number, number, number],
 function isStandardWeight(weight: number): boolean {
   const EPS = 1e-6;
   return Math.abs(weight - 1) <= EPS || Math.abs(weight - 2) <= EPS || Math.abs(weight + 2) <= EPS;
+}
+
+function weightToDashPattern(weight: number): string | undefined {
+  const EPS = 1e-6;
+  if (weight < -EPS) return "8 4";
+  if (Math.abs(weight - 1) <= EPS) return "1 8";
+  if (weight > 1 + EPS) return undefined;
+  return undefined;
 }
 
 function weightToColor(weight: number): string {
