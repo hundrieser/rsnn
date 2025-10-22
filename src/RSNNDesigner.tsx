@@ -90,6 +90,7 @@ type GroupCompressionState = {
       labelVisible: boolean;
     }
   >;
+  edgePoints: Record<string, Point[]>;
   labelVisibleBefore: boolean;
 };
 
@@ -241,7 +242,7 @@ const DEFAULT_MACRO_WIDTH = 480;
 const DEFAULT_MACRO_HEIGHT = 280;
 const DEFAULT_EDGE_WEIGHT = 2;
 const DEFAULT_CANVAS_WIDTH = 800;
-const DEFAULT_CANVAS_HEIGHT = 400;
+const DEFAULT_CANVAS_HEIGHT = 300;
 const MIN_CANVAS_DIMENSION = 200;
 const CANVAS_FRAME_PADDING = 20;
 
@@ -930,6 +931,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             nodes: Object.fromEntries(
               Object.entries(g.compression.nodes).map(([id, data]) => [id, { ...data }])
             ),
+            edgePoints: Object.fromEntries(
+              Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                edgeId,
+                points.map((pt) => ({ ...pt })),
+              ])
+            ),
             labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
           }
         : undefined,
@@ -964,6 +971,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               center: { ...g.compression.center },
               nodes: Object.fromEntries(
                 Object.entries(g.compression.nodes).map(([id, data]) => [id, { ...data }])
+              ),
+              edgePoints: Object.fromEntries(
+                Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                  edgeId,
+                  points.map((pt) => ({ ...pt })),
+                ])
               ),
               labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
             }
@@ -1081,6 +1094,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 center: { ...g.compression.center },
                 nodes: Object.fromEntries(
                   Object.entries(g.compression.nodes).map(([id, data]) => [id, { ...data }])
+                ),
+                edgePoints: Object.fromEntries(
+                  Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                    edgeId,
+                    points.map((pt) => ({ ...pt })),
+                  ])
                 ),
                 labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
               }
@@ -1649,6 +1668,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       } as Neuron;
     });
     if (!newNeurons.length) return false;
+    const edgeIdMap = new Map<string, string>();
     const newEdges = buffer.edges
       .map((edge) => {
         const sourceId = idMap.get(edge.sourceId);
@@ -1659,7 +1679,9 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           y: clamp(snapToGrid(pt.y + offsetY), minY, maxY),
         }));
         const points = transformed.length ? transformed : undefined;
-        return { id: uid("e"), sourceId, targetId, weight: edge.weight, points } as Edge;
+        const newEdgeId = uid("e");
+        edgeIdMap.set(edge.id, newEdgeId);
+        return { id: newEdgeId, sourceId, targetId, weight: edge.weight, points } as Edge;
       })
       .filter((edge): edge is Edge => !!edge);
     setModuleNeurons((prev) => [...prev, ...newNeurons]);
@@ -2003,6 +2025,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                       .filter(([id]) => !toRemove.has(id))
                       .map(([id, data]) => [id, { ...data }])
                   ),
+                  edgePoints: Object.fromEntries(
+                    Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                      edgeId,
+                      points.map((pt) => ({ ...pt })),
+                    ])
+                  ),
                   labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
                 }
               : undefined;
@@ -2017,6 +2045,88 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       );
     }
     setSelectedEdgeId(null);
+    setSelectedNodeIds([]);
+    setSelectedEdgeHandle(null);
+    setActiveSelectionContext("main");
+    return true;
+  }
+
+  function collapseSelectedNeuron(): boolean {
+    if (isRestoringRef.current) return false;
+    if (selectedEdgeId) return false;
+    if (selectedNodeIds.length !== 1) return false;
+    const neuronId = selectedNodeIds[0];
+    const incomingEdges = edges.filter((edge) => edge.targetId === neuronId);
+    const outgoingEdges = edges.filter((edge) => edge.sourceId === neuronId);
+    if (incomingEdges.length !== 1 || outgoingEdges.length !== 1) return false;
+    const incomingEdge = incomingEdges[0];
+    const outgoingEdge = outgoingEdges[0];
+    const sourceId = incomingEdge.sourceId;
+    const targetId = outgoingEdge.targetId;
+    if (!sourceId || !targetId) return false;
+    if (sourceId === targetId) return false;
+    recordSnapshot();
+    // Average the weights of incoming/outgoing edges for the new combined connection
+    const combinedWeight = (incomingEdge.weight + outgoingEdge.weight) / 2;
+    const toRemove = new Set([neuronId]);
+    let createdEdgeId: string | null = null;
+    setEdges((prevEdges) => {
+      const nextEdges = prevEdges.filter(
+        (edge) =>
+          edge.id !== incomingEdge.id &&
+          edge.id !== outgoingEdge.id &&
+          edge.sourceId !== neuronId &&
+          edge.targetId !== neuronId
+      );
+      const existingIndex = nextEdges.findIndex((edge) => edge.sourceId === sourceId && edge.targetId === targetId);
+      if (existingIndex >= 0) {
+        const existing = nextEdges[existingIndex];
+        createdEdgeId = existing.id;
+        nextEdges[existingIndex] = { ...existing, weight: combinedWeight, points: undefined };
+      } else {
+        createdEdgeId = uid("e");
+        nextEdges.push({
+          id: createdEdgeId,
+          sourceId,
+          targetId,
+          weight: combinedWeight,
+        });
+      }
+      return nextEdges;
+    });
+    setDynamicsPanels((prev) => prev.filter((panel) => !toRemove.has(panel.neuronId)));
+    setNeurons((ns) => ns.filter((n) => !toRemove.has(n.id)));
+    setGroups((gs) =>
+      gs
+        .map((g) => {
+          const remainingIds = g.nodeIds.filter((id) => !toRemove.has(id));
+          const compression = g.compression
+            ? {
+                center: { ...g.compression.center },
+                nodes: Object.fromEntries(
+                  Object.entries(g.compression.nodes)
+                    .filter(([id]) => !toRemove.has(id))
+                    .map(([id, data]) => [id, { ...data }])
+                ),
+                edgePoints: Object.fromEntries(
+                  Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                    edgeId,
+                    points.map((pt) => ({ ...pt })),
+                  ])
+                ),
+                labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
+              }
+            : undefined;
+          return {
+            ...g,
+            nodeIds: remainingIds,
+            labelVisible: g.labelVisible === true,
+            compression: compression && Object.keys(compression.nodes).length >= 2 ? compression : undefined,
+          };
+        })
+        .filter((g) => g.nodeIds.length >= 2)
+    );
+    setSelectedEdgeId(createdEdgeId);
     setSelectedNodeIds([]);
     setSelectedEdgeHandle(null);
     setActiveSelectionContext("main");
@@ -2243,6 +2353,26 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         },
       ])
     );
+    const groupNodeSet = new Set(Object.keys(stored));
+    const edgePointStore: Record<string, Point[]> = {};
+    for (const edge of edges) {
+      if (!edge || !edge.points || !edge.points.length) continue;
+      if (!groupNodeSet.has(edge.sourceId) && !groupNodeSet.has(edge.targetId)) continue;
+      const sanitized = sanitizeWaypoints(edge.points);
+      if (!sanitized.length) continue;
+      edgePointStore[edge.id] = sanitized.map((pt) => ({ ...pt }));
+    }
+    const affectedEdgeIds = new Set(Object.keys(edgePointStore));
+    if (affectedEdgeIds.size) {
+      setEdges((prev) =>
+        prev.map((edge) =>
+          affectedEdgeIds.has(edge.id) ? { ...edge, points: [{ x: centerX, y: centerY }] } : edge
+        )
+      );
+      if (selectedEdgeHandle && affectedEdgeIds.has(selectedEdgeHandle.edgeId)) {
+        setSelectedEdgeHandle(null);
+      }
+    }
     setNeurons((ns) =>
       ns.map((n) =>
         stored[n.id]
@@ -2265,6 +2395,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               compression: {
                 center: { x: centerX, y: centerY },
                 nodes: stored,
+                edgePoints: edgePointStore,
                 labelVisibleBefore: g.labelVisible === true,
               },
               labelVisible: true,
@@ -2281,6 +2412,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     if (!group || !group.compression) return false;
     recordSnapshot();
     const saved = group.compression.nodes;
+    const savedEdgePoints = group.compression.edgePoints ?? {};
+    const edgeRestoreEntries = Object.entries(savedEdgePoints);
+    if (edgeRestoreEntries.length) {
+      const restoreMap = new Map(
+        edgeRestoreEntries.map(([edgeId, points]) => [edgeId, points.map((pt) => ({ ...pt }))])
+      );
+      setEdges((prev) =>
+        prev.map((edge) => {
+          const points = restoreMap.get(edge.id);
+          if (!points) return edge;
+          return { ...edge, points };
+        })
+      );
+      if (selectedEdgeHandle && restoreMap.has(selectedEdgeHandle.edgeId)) {
+        setSelectedEdgeHandle(null);
+      }
+    }
     const labelVisibleBefore = group.compression.labelVisibleBefore ?? (group.labelVisible === true);
     setNeurons((ns) =>
       ns.map((n) =>
@@ -2339,6 +2487,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                   Object.entries(g.compression.nodes)
                     .filter(([id]) => validIds.has(id))
                     .map(([id, data]) => [id, { ...data }])
+                ),
+                edgePoints: Object.fromEntries(
+                  Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                    edgeId,
+                    points.map((pt) => ({ ...pt })),
+                  ])
                 ),
                 labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
               }
@@ -2575,20 +2729,60 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     const maxY = Math.max(NODE_RADIUS, canvasHeight - NODE_RADIUS);
     const prevPositions = new Map<string, { x: number; y: number }>();
     const currentById = new Map(neurons.map((n) => [n.id, n]));
-    const clampedUpdates = updates.map((u) => {
+    const updateById = new Map(updates.map((u) => [u.id, u]));
+    const groupMoveNodeIds = new Set<string>();
+    const TRANSLATION_EPSILON = 1e-6;
+
+    for (const group of groups) {
+      if (!group.nodeIds.length) continue;
+      let baseDx: number | null = null;
+      let baseDy: number | null = null;
+      let allMembersMoved = true;
+      for (const nodeId of group.nodeIds) {
+        const prev = currentById.get(nodeId);
+        const target = updateById.get(nodeId);
+        if (!prev || !target) {
+          allMembersMoved = false;
+          break;
+        }
+        const dx = target.x - prev.x;
+        const dy = target.y - prev.y;
+        if (baseDx === null || baseDy === null) {
+          baseDx = dx;
+          baseDy = dy;
+          continue;
+        }
+        if (Math.abs(dx - baseDx) > TRANSLATION_EPSILON || Math.abs(dy - baseDy) > TRANSLATION_EPSILON) {
+          allMembersMoved = false;
+          break;
+        }
+      }
+      if (allMembersMoved && baseDx !== null && baseDy !== null) {
+        for (const nodeId of group.nodeIds) {
+          groupMoveNodeIds.add(nodeId);
+        }
+      }
+    }
+
+    const normalizedUpdates = updates.map((u) => {
       const prev = currentById.get(u.id);
       if (prev) prevPositions.set(u.id, { x: prev.x, y: prev.y });
+      const allowOutside = groupMoveNodeIds.has(u.id);
+      const rawX = allowOutside ? u.x : clamp(u.x, minX, maxX);
+      const rawY = allowOutside ? u.y : clamp(u.y, minY, maxY);
+      const snappedX = snapToGrid(rawX);
+      const snappedY = snapToGrid(rawY);
       return {
         id: u.id,
-        x: clamp(snapToGrid(clamp(u.x, minX, maxX)), minX, maxX),
-        y: clamp(snapToGrid(clamp(u.y, minY, maxY)), minY, maxY),
+        x: allowOutside ? snappedX : clamp(snappedX, minX, maxX),
+        y: allowOutside ? snappedY : clamp(snappedY, minY, maxY),
       };
     });
-    const map = new Map(clampedUpdates.map((u) => [u.id, u]));
+    const map = new Map(normalizedUpdates.map((u) => [u.id, u]));
     setNeurons((ns) => ns.map((n) => (map.has(n.id) ? { ...n, ...map.get(n.id)! } : n)));
 
     const deltaById = new Map<string, { dx: number; dy: number }>();
-    for (const { id } of clampedUpdates) {
+    for (const { id } of normalizedUpdates) {
       const prev = prevPositions.get(id);
       const next = map.get(id);
       if (!prev || !next) continue;
@@ -2598,7 +2792,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       deltaById.set(id, { dx, dy });
     }
 
-    const movedIds = new Set(clampedUpdates.map((u) => u.id));
+    const movedIds = new Set(normalizedUpdates.map((u) => u.id));
     const boardMinX = minX;
     const boardMinY = minY;
     const boardMaxX = maxX;
@@ -2625,10 +2819,18 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             if (!waypoints.length) return edge;
             const { dx, dy } = translation;
             if (dx === 0 && dy === 0) return edge;
-            const translated = waypoints.map((pt) => ({
-              x: clamp(pt.x + dx, boardMinX, boardMaxX),
-              y: clamp(pt.y + dy, boardMinY, boardMaxY),
-            }));
+            const allowOutside = groupMoveNodeIds.has(edge.sourceId) && groupMoveNodeIds.has(edge.targetId);
+            const translated = waypoints.map((pt) => {
+              const x = pt.x + dx;
+              const y = pt.y + dy;
+              if (allowOutside) {
+                return { x, y };
+              }
+              return {
+                x: clamp(x, boardMinX, boardMaxX),
+                y: clamp(y, boardMinY, boardMaxY),
+              };
+            });
             return { ...edge, points: translated };
           })
         );
@@ -2659,16 +2861,45 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           const updatedNodes: GroupCompressionState["nodes"] = Object.fromEntries(
             Object.entries(g.compression.nodes).map(([nodeId, data]) => [nodeId, { ...data, x: data.x + dx, y: data.y + dy }])
           );
+          const updatedEdgePoints = Object.fromEntries(
+            Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+              edgeId,
+              points.map((pt) => ({
+                x: clamp(pt.x + dx, boardMinX, boardMaxX),
+                y: clamp(pt.y + dy, boardMinY, boardMaxY),
+              })),
+            ])
+          );
           return {
             ...g,
             compression: {
               center: { x: g.compression.center.x + dx, y: g.compression.center.y + dy },
               nodes: updatedNodes,
+              edgePoints: updatedEdgePoints,
               labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
             },
           };
         })
       );
+      const collapsedEdgeCenters = new Map<string, { x: number; y: number }>();
+      for (const trans of groupTranslations) {
+        const group = groups.find((g) => g.id === trans.groupId);
+        if (!group?.compression) continue;
+        const newCenterX = group.compression.center.x + trans.dx;
+        const newCenterY = group.compression.center.y + trans.dy;
+        for (const edgeId of Object.keys(group.compression.edgePoints ?? {})) {
+          collapsedEdgeCenters.set(edgeId, { x: newCenterX, y: newCenterY });
+        }
+      }
+      if (collapsedEdgeCenters.size) {
+        setEdges((prev) =>
+          prev.map((edge) => {
+            const center = collapsedEdgeCenters.get(edge.id);
+            if (!center) return edge;
+            return { ...edge, points: [{ x: center.x, y: center.y }] };
+          })
+        );
+      }
     }
   }
 
@@ -2800,6 +3031,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     const copiedEdges = edges
       .filter((e) => selectedSet.has(e.sourceId) && selectedSet.has(e.targetId))
       .map((e) => ({ ...e, points: sanitizeWaypoints(e.points) }));
+    const selectedEdgeIds = new Set(copiedEdges.map((e) => e.id));
     const copiedGroups = groups
       .filter((g) => g.nodeIds.every((id) => selectedSet.has(id)))
       .map((g) => ({
@@ -2814,6 +3046,11 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 Object.entries(g.compression.nodes)
                   .filter(([id]) => selectedSet.has(id))
                   .map(([id, data]) => [id, { ...data }])
+              ),
+              edgePoints: Object.fromEntries(
+                Object.entries(g.compression.edgePoints ?? {})
+                  .filter(([edgeId]) => selectedEdgeIds.has(edgeId))
+                  .map(([edgeId, points]) => [edgeId, points.map((pt) => ({ ...pt }))])
               ),
               labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
             }
@@ -2865,6 +3102,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       } as Neuron;
     });
     if (!newNeurons.length) return false;
+    const edgeIdMap = new Map<string, string>();
     const newEdges = buffer.edges
       .map((edge) => {
         const sourceId = idMap.get(edge.sourceId);
@@ -2875,7 +3113,9 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           y: clamp(snapToGrid(pt.y + offsetY), minY, maxY),
         }));
         const points = transformed.length ? transformed : undefined;
-        return { id: uid("e"), sourceId, targetId, weight: edge.weight, points } as Edge;
+        const newEdgeId = uid("e");
+        edgeIdMap.set(edge.id, newEdgeId);
+        return { id: newEdgeId, sourceId, targetId, weight: edge.weight, points } as Edge;
       })
       .filter((edge): edge is Edge => !!edge);
     setNeurons((prev) => [...prev, ...newNeurons]);
@@ -2925,6 +3165,24 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                       })
                       .filter((entry): entry is [string, GroupCompressionState["nodes"][string]] => Boolean(entry))
                   ),
+                  edgePoints: Object.fromEntries(
+                    Object.entries(g.compression.edgePoints ?? {})
+                      .map(([edgeId, points]) => {
+                        const mappedEdgeId = edgeIdMap.get(edgeId);
+                        if (!mappedEdgeId) return null;
+                        const transformedPoints = points
+                          .map<Point | null>((pt) => {
+                            const px = clamp(snapToGrid(pt.x + offsetX), minX, maxX);
+                            const py = clamp(snapToGrid(pt.y + offsetY), minY, maxY);
+                            if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+                            return { x: px, y: py };
+                          })
+                          .filter((pt): pt is Point => pt !== null);
+                        if (!transformedPoints.length) return null;
+                        return [mappedEdgeId, transformedPoints];
+                      })
+                      .filter((entry): entry is [string, Point[]] => Boolean(entry))
+                  ),
                   labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
                 }
               : null,
@@ -2939,6 +3197,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             compression: {
               center: { x: number; y: number };
               nodes: Record<string, { x: number; y: number; labelOffsetX: number; labelOffsetY: number; labelVisible: boolean }>;
+              edgePoints: Record<string, Point[]>;
               labelVisibleBefore: boolean;
             } | null;
           } => Boolean(g)
@@ -2961,6 +3220,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                       center: { x: proto.compression.center.x + offsetX, y: proto.compression.center.y + offsetY },
                       nodes: Object.fromEntries(
                         Object.entries(proto.compression.nodes).map(([id, data]) => [id, { ...data }])
+                      ),
+                      edgePoints: Object.fromEntries(
+                        Object.entries(proto.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                          edgeId,
+                          points.map((pt) => ({ ...pt })),
+                        ])
                       ),
                       labelVisibleBefore: proto.compression.labelVisibleBefore,
                     }
@@ -3033,8 +3298,11 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             handled = true;
           }
         } else {
-          if (removeSelectedEdgeWaypoint()) handled = true;
-          else if (selectedEdgeId || selectedNodeIds.length) {
+          if (event.shiftKey && collapseSelectedNeuron()) {
+            handled = true;
+          } else if (removeSelectedEdgeWaypoint()) {
+            handled = true;
+          } else if (selectedEdgeId || selectedNodeIds.length) {
             deleteSelected();
             handled = true;
           }
@@ -3051,6 +3319,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     copySelection,
     deleteModuleSelection,
     deleteSelected,
+    collapseSelectedNeuron,
     moduleSelectedEdgeId,
     moduleSelectedNodeIds,
     pasteModuleSelection,
@@ -3081,6 +3350,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                   labelOffsetY: data.labelOffsetY,
                   labelVisible: data.labelVisible,
                 },
+              ])
+            ),
+            edgePoints: Object.fromEntries(
+              Object.entries(group.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                edgeId,
+                points.map((pt) => ({ x: pt.x, y: pt.y })),
               ])
             ),
             labelVisibleBefore: group.compression.labelVisibleBefore === true,
@@ -3235,6 +3510,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               const centerY = Number(rawCompression.center?.y);
               if (Number.isFinite(centerX) && Number.isFinite(centerY) && rawCompression.nodes && typeof rawCompression.nodes === "object") {
                 const compressionNodes: GroupCompressionState["nodes"] = {};
+                const compressionEdgePoints: Record<string, Point[]> = {};
                 for (const [nodeId, nodeData] of Object.entries(rawCompression.nodes as Record<string, any>)) {
                   if (!neuronIds.has(nodeId)) continue;
                   if (!nodeData || typeof nodeData !== "object") continue;
@@ -3254,9 +3530,27 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                   };
                 }
                 if (Object.keys(compressionNodes).length >= 2) {
+                  if (rawCompression.edgePoints && typeof rawCompression.edgePoints === "object") {
+                    for (const [edgeId, value] of Object.entries(rawCompression.edgePoints as Record<string, any>)) {
+                      if (typeof edgeId !== "string") continue;
+                      if (!Array.isArray(value)) continue;
+                      const sanitizedPoints = value
+                        .map((pt: any) => {
+                          const px = Number(pt?.x);
+                          const py = Number(pt?.y);
+                          if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+                          return { x: px, y: py };
+                        })
+                        .filter((pt: Point | null): pt is Point => pt !== null);
+                      if (sanitizedPoints.length) {
+                        compressionEdgePoints[edgeId] = sanitizedPoints;
+                      }
+                    }
+                  }
                   compression = {
                     center: { x: centerX, y: centerY },
                     nodes: compressionNodes,
+                    edgePoints: compressionEdgePoints,
                     labelVisibleBefore:
                       rawCompression.labelVisibleBefore === undefined
                         ? labelVisible
@@ -4216,7 +4510,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 : "Expand canvas and move controls below"
             }
           >
-            {isCanvasFullScreen ? "Small Screen" : "Full Screen"}
+            {isCanvasFullScreen ? "Full Screen" : "Full Screen"}
           </button>
           <button
             className={`px-3 py-1 rounded-full border transition ${
