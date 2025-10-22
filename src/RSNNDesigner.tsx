@@ -663,6 +663,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const playbackTimeoutRef = useRef<number | null>(null);
   const [hideStandardWeights, setHideStandardWeights] = useState<boolean>(false);
   const [touchMultiSelect, setTouchMultiSelect] = useState<boolean>(false);
+  const [isCanvasFullScreen, setIsCanvasFullScreen] = useState<boolean>(false);
   const [showCleanDialog, setShowCleanDialog] = useState<boolean>(false);
 
   const copyBufferRef = useRef<{
@@ -3769,6 +3770,395 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     }, 300);
   }
 
+  const controlsPanel = (
+    <div className="space-y-4">
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">Simulation</div>
+        <div className="grid grid-cols-3 items-center gap-2">
+          <label className="col-span-1">Horizon T</label>
+          <input
+            className="col-span-2 px-2 py-1 border rounded-lg"
+            type="number"
+            min={0.1}
+            step={0.1}
+            value={T}
+            onChange={(e) => setT(Number(e.target.value))}
+          />
+
+          <label className="col-span-1">Memory h</label>
+          <div className="col-span-2 flex items-center gap-2">
+            <select className="px-2 py-1 border rounded-lg" value={hKind} onChange={(e) => setHKind(e.target.value as any)}>
+              <option value="finite">finite</option>
+              <option value="zero">0</option>
+              <option value="infty">∞</option>
+            </select>
+            {hKind === "finite" && (
+              <input
+                className="px-2 py-1 border rounded-lg w-24"
+                type="number"
+                min={0}
+                step={0.1}
+                value={hVal}
+                onChange={(e) => setHVal(Number(e.target.value))}
+              />
+            )}
+          </div>
+
+          <div className="col-span-3 flex gap-2">
+            <button className="px-3 py-1 rounded-full border bg-black text-white" onClick={runSimulation}>
+              Run
+            </button>
+            <button className="px-3 py-1 rounded-full border" onClick={animateButtonAction} title={animateButtonTitle}>
+              {animateButtonLabel}
+            </button>
+            {hasAnimation && (
+              <button className="px-3 py-1 rounded-full border" onClick={stopAnimation}>
+                {isAnimating ? "Stop" : "Hide"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">Canvas Layout</div>
+        <div className="grid grid-cols-3 items-center gap-2">
+          <label className="col-span-1">Width</label>
+          <input
+            className="col-span-2 px-2 py-1 border rounded-lg"
+            type="number"
+            min={MIN_CANVAS_DIMENSION}
+            step={50}
+            value={canvasWidthInput}
+            onChange={(e) => setCanvasWidthInput(e.target.value)}
+            onKeyDown={handleCanvasSizeKeyDown}
+          />
+
+          <label className="col-span-1">Height</label>
+          <input
+            className="col-span-2 px-2 py-1 border rounded-lg"
+            type="number"
+            min={MIN_CANVAS_DIMENSION}
+            step={50}
+            value={canvasHeightInput}
+            onChange={(e) => setCanvasHeightInput(e.target.value)}
+            onKeyDown={handleCanvasSizeKeyDown}
+          />
+          <button type="button" className="col-span-3 px-3 py-1 rounded-full border" onClick={applyCanvasSize} disabled={!isCanvasSizeDirty}>
+            Apply
+          </button>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">File I/O</div>
+        <div className="flex flex-wrap gap-2">
+          <button className="px-3 py-1 rounded-full border" onClick={exportCanvasPdf}>
+            Export Canvas as PDF
+          </button>
+          <button
+            className="px-3 py-1 rounded-full border"
+            onClick={exportAnimationPdfs}
+            disabled={!hasAnimation || isExportingAnimationPdfs}
+            title={
+              hasAnimation
+                ? isExportingAnimationPdfs
+                  ? "Generating PDFs for each animation step..."
+                  : "Select a folder to export a PDF for each animation frame."
+                : "Run a spike animation to enable per-frame PDF export."
+            }
+          >
+            {isExportingAnimationPdfs ? "Exporting..." : "Export Animation PDFs"}
+          </button>
+          <button className="px-3 py-1 rounded-full border" onClick={exportState}>
+            Export JSON
+          </button>
+          <button className="px-3 py-1 rounded-full border" onClick={triggerImport}>
+            Import JSON
+          </button>
+          <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={onImportInputChange} />
+        </div>
+        <label
+          className={`mt-2 flex items-center gap-2 text-xs text-gray-600 ${hasAnimation ? "" : "opacity-60"}`}
+          title={
+            hasAnimation
+              ? "Toggle whether the animation counter overlay is included in PDF canvas exports."
+              : "Run a simulation with spike animation to enable the counter overlay in PDF exports."
+          }
+        >
+          <input
+            type="checkbox"
+            className="accent-black"
+            checked={includeAnimationCounterInPdf}
+            disabled={!hasAnimation}
+            onChange={(e) => setIncludeAnimationCounterInPdf(e.target.checked)}
+          />
+          Include animation counter overlay in PDF
+        </label>
+      </div>
+
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">Input Spike Trains</div>
+        {neurons.filter((n) => n.role === "input").length === 0 && <div className="text-gray-500">Add an Input neuron to edit trains.</div>}
+        <div className="space-y-3 max-h-72 overflow-auto pr-1">
+          {neurons
+            .filter((n) => n.role === "input")
+            .map((n) => (
+              <div key={n.id} className="border rounded-xl p-2">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="font-medium">{n.label}</div>
+                  <div className="text-xs text-gray-500">({n.id.slice(-4)})</div>
+                </div>
+                <label className="text-xs text-gray-600">times (s): space/comma separated</label>
+                <textarea
+                  className="w-full mt-1 p-2 border rounded-lg font-mono text-xs"
+                  rows={2}
+                  placeholder="e.g., 0.5 1 1.5 3 4.2"
+                  value={inputText[n.id] || ""}
+                  onChange={(e) => setInputText((prev) => ({ ...prev, [n.id]: e.target.value }))}
+                />
+                <div className="flex items-center gap-2 mt-1">
+                  <button
+                    className="px-2 py-1 border rounded-full"
+                    onClick={() => setInputText((prev) => ({ ...prev, [n.id]: jitterPoissonText(T, 3) }))}
+                    title="Fill with a Poisson(λ=3 Hz) sample over [0,T]"
+                  >
+                    Poisson λ=3
+                  </button>
+                  <button
+                    className="px-2 py-1 border rounded-full"
+                    onClick={() => setInputText((prev) => ({ ...prev, [n.id]: integerSpikeText(T) }))}
+                    title="Fill with spikes at integer seconds up to T"
+                  >
+                    Integer times
+                  </button>
+                  <button className="px-2 py-1 border rounded-full" onClick={() => setInputText((prev) => ({ ...prev, [n.id]: "" }))}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const modulesSection = (
+    <>
+      <div className="border-t border-gray-200 my-6" />
+      <div className="space-y-4">
+        <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-lg font-semibold">Modules</div>
+            <button className="px-3 py-1 rounded-full border" onClick={createModule}>
+              + New Module
+            </button>
+          </div>
+          {modules.length === 0 ? (
+            <div className="text-gray-500 text-sm">Create a module to reuse neuron motifs on the main canvas.</div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {modules.map((module) => {
+                const isActive = module.id === activeModuleId;
+                return (
+                  <div key={module.id} className={`border rounded-xl p-3 flex flex-col gap-3 ${isActive ? "border-black" : "border-gray-200"}`}>
+                    <div className="flex items-start gap-3">
+                      <div className="flex-1 min-w-0 space-y-2">
+                        <input className="w-full px-2 py-1 border rounded-lg" value={module.name} onChange={(e) => renameModule(module.id, e.target.value)} />
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
+                          <span>{module.neurons.length} neurons</span>
+                          <span>{module.edges.length} edges</span>
+                          <span>{module.inputNeuronIds.length} inputs</span>
+                          <span>{module.outputNeuronIds.length} outputs</span>
+                        </div>
+                      </div>
+                      {isActive && <span className="shrink-0 rounded-full bg-black px-2 py-0.5 text-xs font-medium text-white">Editing</span>}
+                    </div>
+                    <div className="flex flex-wrap gap-2 border-t pt-2">
+                      <button
+                        className={`px-3 py-1 rounded-full border ${isActive ? "bg-black text-white" : ""}`}
+                        onClick={() => openModuleEditor(module)}
+                      >
+                        {isActive ? "Open Editor" : "Edit"}
+                      </button>
+                      <button className="px-3 py-1 rounded-full border" onClick={() => instantiateModule(module)}>
+                        Place on Board
+                      </button>
+                      <button className="px-3 py-1 rounded-full border" onClick={() => deleteModuleById(module.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {activeModuleId && (
+          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-lg font-semibold">Module Editor{activeModule ? ` — ${activeModule.name}` : ""}</div>
+              <div className="flex gap-2">
+                <button
+                  className={`px-3 py-1 rounded-full border ${moduleMode === "select" ? "bg-black text-white" : ""}`}
+                  onClick={() => {
+                    setModuleMode("select");
+                    cancelModuleConnect();
+                  }}
+                >
+                  Select
+                </button>
+                <button
+                  className={`px-3 py-1 rounded-full border ${moduleMode === "connect" ? "bg-black text-white" : ""}`}
+                  onClick={() => {
+                    setModuleMode("connect");
+                    setModuleConnectSrc(null);
+                    setModuleConnectPoints([]);
+                  }}
+                >
+                  Connect
+                </button>
+                <button className="px-3 py-1 rounded-full border" onClick={() => openModuleEditor(null)}>
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("hidden")}>
+                + Hidden
+              </button>
+              <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("input")}>
+                + Input
+              </button>
+              <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("output")}>
+                + Output
+              </button>
+              <button
+                className="px-3 py-1 rounded-full border"
+                onClick={() => deleteModuleSelection()}
+                disabled={!moduleSelectedEdgeId && moduleSelectedNodeIds.length === 0}
+              >
+                Delete Selected
+              </button>
+            </div>
+
+            <div className="grid grid-cols-12 gap-4">
+              <div className="col-span-7 lg:col-span-8 space-y-2">
+                <CanvasView
+                  neurons={moduleNeurons}
+                  edges={moduleEdges}
+                  selectedNodeIds={moduleSelectedNodeIds}
+                  selectedEdgeId={moduleSelectedEdgeId}
+                  canvasWidth={moduleCanvasWidth}
+                  canvasHeight={moduleCanvasHeight}
+                  mode={moduleMode}
+                  connectSrc={moduleConnectSrc}
+                  connectPoints={moduleConnectPoints}
+                  groups={[]}
+                  dynamicsPanels={[]}
+                  dynamicsData={{ sim: null, T: T }}
+                  includeColors={includeColors}
+                  stickyMultiSelect={touchMultiSelect}
+                  onSelectGroup={(group, _modifiers) => []}
+                  onNodePointerDown={handleModuleNodePointerDown}
+                  onSelectEdge={handleModuleEdgePointerDown}
+                  onClearSelection={clearModuleSelection}
+                  onMoveNodes={moveModuleNodes}
+                  onMoveLabels={moveModuleLabelOffsets}
+                  hideStandardWeights={hideStandardWeights}
+                  onBeginDrag={(_ids) => {}}
+                  onBeginLabelDrag={(_id) => {}}
+                  onBeginEdgeDrag={(_edgeId, _index) => {}}
+                  onEndDrag={() => {}}
+                  onMarqueeSelect={() => {}}
+                  onCompressGroup={() => {}}
+                  onExpandGroup={() => {}}
+                  onMovePanel={() => {}}
+                  onClosePanel={() => {}}
+                  onBeginConnect={beginModuleConnect}
+                  onCompleteConnect={completeModuleConnect}
+                  onAddWaypoint={addModuleWaypoint}
+                  onCancelConnect={cancelModuleConnect}
+                  activeEdgeHandle={moduleSelectedEdgeHandle}
+                  onSelectEdgeHandle={(edgeId, index) => {
+                    if (edgeId === null || index === null) {
+                      setModuleSelectedEdgeHandle(null);
+                    } else {
+                      setModuleSelectedEdgeHandle({ edgeId, index });
+                      setActiveSelectionContext("module");
+                    }
+                  }}
+                  onMoveEdgePoint={updateModuleEdgeWaypoint}
+                  onInsertEdgePoint={insertModuleEdgeWaypoint}
+                  onEditEdge={setModuleSelectedEdgeId}
+                  highlightedNodeIds={[]}
+                  highlightedEdgeIds={[]}
+                />
+                <EdgeEditor edge={moduleEdges.find((e) => e.id === moduleSelectedEdgeId) || null} onChange={setModuleWeight} onRemove={removeModuleEdge} />
+              </div>
+              <div className="col-span-5 lg:col-span-4 space-y-3">
+                <div className="p-3 rounded-xl border bg-white space-y-2">
+                  <div className="text-lg font-semibold">Module Canvas</div>
+                  <div className="grid grid-cols-3 items-center gap-2">
+                    <label className="col-span-1">Width</label>
+                    <input
+                      className="col-span-2 px-2 py-1 border rounded-lg"
+                      type="number"
+                      min={200}
+                      step={20}
+                      value={moduleCanvasWidth}
+                      onChange={(e) => setModuleCanvasWidth(Math.max(200, Number(e.target.value)))}
+                    />
+                    <label className="col-span-1">Height</label>
+                    <input
+                      className="col-span-2 px-2 py-1 border rounded-lg"
+                      type="number"
+                      min={200}
+                      step={20}
+                      value={moduleCanvasHeight}
+                      onChange={(e) => setModuleCanvasHeight(Math.max(200, Number(e.target.value)))}
+                    />
+                  </div>
+                </div>
+
+                <ModuleNeuronInspector
+                  neurons={moduleNeurons}
+                  selectedIds={moduleSelectedNodeIds}
+                  inputIds={moduleInputIds}
+                  outputIds={moduleOutputIds}
+                  onLabel={setModuleLabel}
+                  onRole={setModuleRole}
+                  onInput={setModuleInput}
+                  onOutput={setModuleOutput}
+                  onLabelVisible={setModuleLabelVisibility}
+                  onLabelOffset={setModuleLabelOffset}
+                  onResetLabelOffset={resetModuleLabelOffset}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  const spikeRasterSection = (
+    <div className="p-3 rounded-2xl border shadow-sm bg-white">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-lg font-semibold">Spike Raster</div>
+        <div className="text-xs text-gray-500">
+          Strict threshold {">"} 1; h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}
+        </div>
+      </div>
+      {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
+      <div ref={rasterExportRef}>
+        <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
+      </div>
+    </div>
+  );
+
   return (
     <div
       className="w-full text-sm"
@@ -3779,7 +4169,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         }
       }}
     >
-      <div className="mx-auto max-w-6xl flex flex-col gap-3 page-shell">
+      <div className="flex flex-col gap-3 page-shell max-w-6xl mx-auto">
         <header className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-bold min-w-0">Spiking Neural Network Simulator      </h1>
           {onToggleTheme ? (
@@ -3814,6 +4204,19 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             title="Connect nodes"
           >
             Connect
+          </button>
+          <button
+            className={`px-3 py-1 rounded-full border transition ${
+              isCanvasFullScreen ? "bg-black text-white border-black" : "bg-white text-gray-700 border-gray-300"
+            }`}
+            onClick={() => setIsCanvasFullScreen((prev) => !prev)}
+            title={
+              isCanvasFullScreen
+                ? "Restore split layout with controls beside the canvas"
+                : "Expand canvas and move controls below"
+            }
+          >
+            {isCanvasFullScreen ? "Small Screen" : "Full Screen"}
           </button>
           <button
             className={`px-3 py-1 rounded-full border transition ${
@@ -4049,66 +4452,69 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           </div>
         )}
 
-        <div className="flex flex-col xl:flex-row xl:items-start xl:justify-center gap-4">
-        {/* Canvas */}
-        <div className="w-full xl:max-w-[960px] mx-auto xl:mx-0">
-          <div ref={canvasExportRef} className="relative w-full">
-            <CanvasView
-              neurons={neurons}
-              edges={edges}
-              selectedNodeIds={selectedNodeIds}
-              selectedEdgeId={selectedEdgeId}
-              canvasWidth={canvasWidth}
-              canvasHeight={canvasHeight}
-              mode={mode}
-              connectSrc={connectSrc}
-              connectPoints={connectPoints}
-              groups={groups}
-              dynamicsPanels={dynamicsPanels}
-              dynamicsData={{ sim, T }}
-              showDynamicsHeaders={showDynamicsHeaders}
-              showOutputPotentials={showOutputPotentials}
-              includeColors={includeColors}
-              hideStandardWeights={hideStandardWeights}
-              stickyMultiSelect={touchMultiSelect}
-              onSelectGroup={(group, modifiers) => handleGroupPointerDown(group.id, modifiers)}
-              onNodePointerDown={handleNodePointerDown}
-              onNodeDoubleClick={openDynamicsPanelForNeuron}
-              onSelectEdge={handleEdgePointerDown}
-              onClearSelection={clearSelection}
-              onMoveNodes={moveNodes}
-              onMoveLabels={moveLabelOffsets}
-              onBeginDrag={(_ids) => beginNodeDrag()}
-              onBeginLabelDrag={(_id) => beginLabelDrag()}
-              onBeginEdgeDrag={() => beginEdgeDrag()}
-              onEndDrag={endDrag}
-              onMarqueeSelect={handleMarqueeSelect}
-              onCompressGroup={compressGroup}
-              onExpandGroup={expandGroup}
-              onMovePanel={moveDynamicsPanel}
-              onClosePanel={closeDynamicsPanel}
-              onBeginConnect={beginConnect}
-              onCompleteConnect={completeConnect}
-              onAddWaypoint={addConnectWaypoint}
-              onCancelConnect={cancelConnect}
-              onExitConnectMode={exitConnectMode}
-              activeEdgeHandle={selectedEdgeHandle}
-              onSelectEdgeHandle={(edgeId, index) => {
-                if (edgeId === null || index === null) {
-                  setSelectedEdgeHandle(null);
-                } else {
-                  setSelectedEdgeHandle({ edgeId, index });
-                  setActiveSelectionContext("main");
-                }
-              }}
-              onMoveEdgePoint={updateEdgeWaypoint}
-              onInsertEdgePoint={insertEdgeWaypoint}
-              onEditEdge={setSelectedEdgeId}
-              highlightedNodeIds={highlightedNodeIds}
-              highlightedEdgeIds={highlightedEdgeIds}
-              recentNodeIds={recentNodeIds}
-              recentEdgeIds={recentEdgeIds}
-            />
+        <div
+          className={`flex gap-4 ${isCanvasFullScreen ? "flex-col" : "flex-col xl:flex-row xl:items-start xl:justify-center"}`}
+        >
+          {/* Canvas */}
+          <div className={`w-full ${isCanvasFullScreen ? "" : "xl:max-w-[960px] mx-auto xl:mx-0"}`}>
+            <div ref={canvasExportRef} className={`relative w-full ${isCanvasFullScreen ? "min-h-[80vh]" : ""}`}>
+              <CanvasView
+                neurons={neurons}
+                edges={edges}
+                selectedNodeIds={selectedNodeIds}
+                selectedEdgeId={selectedEdgeId}
+                canvasWidth={canvasWidth}
+                canvasHeight={canvasHeight}
+                mode={mode}
+                connectSrc={connectSrc}
+                connectPoints={connectPoints}
+                groups={groups}
+                dynamicsPanels={dynamicsPanels}
+                dynamicsData={{ sim, T }}
+                showDynamicsHeaders={showDynamicsHeaders}
+                showOutputPotentials={showOutputPotentials}
+                includeColors={includeColors}
+                hideStandardWeights={hideStandardWeights}
+                stickyMultiSelect={touchMultiSelect}
+                onSelectGroup={(group, modifiers) => handleGroupPointerDown(group.id, modifiers)}
+                onNodePointerDown={handleNodePointerDown}
+                onNodeDoubleClick={openDynamicsPanelForNeuron}
+                onSelectEdge={handleEdgePointerDown}
+                onClearSelection={clearSelection}
+                onMoveNodes={moveNodes}
+                onMoveLabels={moveLabelOffsets}
+                onBeginDrag={(_ids) => beginNodeDrag()}
+                onBeginLabelDrag={(_id) => beginLabelDrag()}
+                onBeginEdgeDrag={() => beginEdgeDrag()}
+                onEndDrag={endDrag}
+                onMarqueeSelect={handleMarqueeSelect}
+                onCompressGroup={compressGroup}
+                onExpandGroup={expandGroup}
+                onMovePanel={moveDynamicsPanel}
+                onClosePanel={closeDynamicsPanel}
+                onBeginConnect={beginConnect}
+                onCompleteConnect={completeConnect}
+                onAddWaypoint={addConnectWaypoint}
+                onCancelConnect={cancelConnect}
+                onExitConnectMode={exitConnectMode}
+                activeEdgeHandle={selectedEdgeHandle}
+                onSelectEdgeHandle={(edgeId, index) => {
+                  if (edgeId === null || index === null) {
+                    setSelectedEdgeHandle(null);
+                  } else {
+                    setSelectedEdgeHandle({ edgeId, index });
+                    setActiveSelectionContext("main");
+                  }
+                }}
+                onMoveEdgePoint={updateEdgeWaypoint}
+                onInsertEdgePoint={insertEdgeWaypoint}
+                onEditEdge={setSelectedEdgeId}
+                highlightedNodeIds={highlightedNodeIds}
+                highlightedEdgeIds={highlightedEdgeIds}
+                recentNodeIds={recentNodeIds}
+                recentEdgeIds={recentEdgeIds}
+                fullWidth={isCanvasFullScreen}
+              />
             {hasAnimation && (
               <div className="pointer-events-none absolute inset-0 flex flex-col justify-end">
                 <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 sm:gap-3 px-3 pb-3">
@@ -4163,441 +4569,25 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           <EdgeEditor edge={edges.find((e) => e.id === selectedEdgeId) || null} onChange={setWeight} onRemove={removeEdge} />
         </div>
 
-        {/* Right Panel */}
-        <div className="w-full xl:w-[360px] space-y-4 mx-auto xl:mx-0">
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">Simulation</div>
-            <div className="grid grid-cols-3 items-center gap-2">
-              <label className="col-span-1">Horizon T</label>
-              <input
-                className="col-span-2 px-2 py-1 border rounded-lg"
-                type="number"
-                min={0.1}
-                step={0.1}
-                value={T}
-                onChange={(e) => setT(Number(e.target.value))}
-              />
-
-              <label className="col-span-1">Memory h</label>
-              <div className="col-span-2 flex items-center gap-2">
-                <select
-                  className="px-2 py-1 border rounded-lg"
-                  value={hKind}
-                  onChange={(e) => setHKind(e.target.value as any)}
-                >
-                  <option value="finite">finite</option>
-                  <option value="zero">0</option>
-                  <option value="infty">∞</option>
-                </select>
-                {hKind === "finite" && (
-                  <input
-                    className="px-2 py-1 border rounded-lg w-24"
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={hVal}
-                    onChange={(e) => setHVal(Number(e.target.value))}
-                  />
-                )}
-              </div>
-
-              <div className="col-span-3 flex gap-2">
-                <button className="px-3 py-1 rounded-full border bg-black text-white" onClick={runSimulation}>
-                  Run
-                </button>
-                <button
-                  className="px-3 py-1 rounded-full border"
-                  onClick={animateButtonAction}
-                  title={animateButtonTitle}
-                >
-                  {animateButtonLabel}
-                </button>
-                {hasAnimation && (
-                  <button className="px-3 py-1 rounded-full border" onClick={stopAnimation}>
-                    {isAnimating ? "Stop" : "Hide"}
-                  </button>
-                )}
-                {/* <button className="px-3 py-1 rounded-full border" onClick={clearSimulation}>
-                  Clear
-                </button> */}
-              </div>
-            </div>
-          </div>
-
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">Canvas Layout</div>
-            <div className="grid grid-cols-3 items-center gap-2">
-              <label className="col-span-1">Width</label>
-              <input
-                className="col-span-2 px-2 py-1 border rounded-lg"
-                type="number"
-                min={MIN_CANVAS_DIMENSION}
-                step={50}
-                value={canvasWidthInput}
-                onChange={(e) => setCanvasWidthInput(e.target.value)}
-                onKeyDown={handleCanvasSizeKeyDown}
-              />
-
-              <label className="col-span-1">Height</label>
-              <input
-                className="col-span-2 px-2 py-1 border rounded-lg"
-                type="number"
-                min={MIN_CANVAS_DIMENSION}
-                step={50}
-                value={canvasHeightInput}
-                onChange={(e) => setCanvasHeightInput(e.target.value)}
-                onKeyDown={handleCanvasSizeKeyDown}
-              />
-              <button
-                type="button"
-                className="col-span-3 px-3 py-1 rounded-full border"
-                onClick={applyCanvasSize}
-                disabled={!isCanvasSizeDirty}
-              >
-                Apply
-              </button>
-            </div>
-          </div>
-
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">File I/O</div>
-            <div className="flex flex-wrap gap-2">
-              <button className="px-3 py-1 rounded-full border" onClick={exportCanvasPdf}>
-                Export Canvas as PDF
-              </button>
-              <button
-                className="px-3 py-1 rounded-full border"
-                onClick={exportAnimationPdfs}
-                disabled={!hasAnimation || isExportingAnimationPdfs}
-                title={
-                  hasAnimation
-                    ? isExportingAnimationPdfs
-                      ? "Generating PDFs for each animation step..."
-                      : "Select a folder to export a PDF for each animation frame."
-                    : "Run a spike animation to enable per-frame PDF export."
-                }
-              >
-                {isExportingAnimationPdfs ? "Exporting..." : "Export Animation PDFs"}
-              </button>
-              <button className="px-3 py-1 rounded-full border" onClick={exportState}>
-                Export JSON
-              </button>
-            
-              {/* <button className="px-3 py-1 rounded-full border" onClick={exportPdf}>
-                Export Full PDF Report
-              </button> */}
-              <button className="px-3 py-1 rounded-full border" onClick={triggerImport}>
-                Import JSON
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={onImportInputChange}
-              />
-            </div>
-            <label
-              className={`mt-2 flex items-center gap-2 text-xs text-gray-600 ${hasAnimation ? "" : "opacity-60"}`}
-              title={
-                hasAnimation
-                  ? "Toggle whether the animation counter overlay is included in PDF canvas exports."
-                  : "Run a simulation with spike animation to enable the counter overlay in PDF exports."
-              }
-            >
-              <input
-                type="checkbox"
-                className="accent-black"
-                checked={includeAnimationCounterInPdf}
-                disabled={!hasAnimation}
-                onChange={(e) => setIncludeAnimationCounterInPdf(e.target.checked)}
-              />
-              Include animation counter overlay in PDF
-            </label>
-          </div>
-              
-          {/* Input spike editors */}
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">Input Spike Trains</div>
-            {neurons.filter((n) => n.role === "input").length === 0 && (
-              <div className="text-gray-500">Add an Input neuron to edit trains.</div>
-            )}
-            <div className="space-y-3 max-h-72 overflow-auto pr-1">
-              {neurons
-                .filter((n) => n.role === "input")
-                .map((n) => (
-                  <div key={n.id} className="border rounded-xl p-2">
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className="font-medium">{n.label}</div>
-                      <div className="text-xs text-gray-500">({n.id.slice(-4)})</div>
-                    </div>
-                    <label className="text-xs text-gray-600">times (s): space/comma separated</label>
-                    <textarea
-                      className="w-full mt-1 p-2 border rounded-lg font-mono text-xs"
-                      rows={2}
-                      placeholder="e.g., 0.5 1 1.5 3 4.2"
-                      value={inputText[n.id] || ""}
-                      onChange={(e) => setInputText((prev) => ({ ...prev, [n.id]: e.target.value }))}
-                    />
-                    <div className="flex items-center gap-2 mt-1">
-                      <button
-                        className="px-2 py-1 border rounded-full"
-                        onClick={() => setInputText((prev) => ({ ...prev, [n.id]: jitterPoissonText(T, 3) }))}
-                        title="Fill with a Poisson(λ=3 Hz) sample over [0,T]"
-                      >
-                        Poisson λ=3
-                      </button>
-                      <button
-                        className="px-2 py-1 border rounded-full"
-                        onClick={() => setInputText((prev) => ({ ...prev, [n.id]: integerSpikeText(T) }))}
-                        title="Fill with spikes at integer seconds up to T"
-                      >
-                        Integer times
-                      </button>
-                      <button
-                        className="px-2 py-1 border rounded-full"
-                        onClick={() => setInputText((prev) => ({ ...prev, [n.id]: "" }))}
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-
-        </div>
+        {!isCanvasFullScreen && (
+          <div className="w-full xl:w-[360px] mx-auto xl:mx-0">{controlsPanel}</div>
+        )}
         </div>
 
-        <div className="border-t border-gray-200 my-6" />
-        <div className="space-y-4">
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-lg font-semibold">Modules</div>
-              <button className="px-3 py-1 rounded-full border" onClick={createModule}>
-                + New Module
-              </button>
-            </div>
-            {modules.length === 0 ? (
-              <div className="text-gray-500 text-sm">Create a module to reuse neuron motifs on the main canvas.</div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {modules.map((module) => {
-                  const isActive = module.id === activeModuleId;
-                  return (
-                    <div
-                      key={module.id}
-                      className={`border rounded-xl p-3 flex flex-col gap-3 ${isActive ? "border-black" : "border-gray-200"}`}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="flex-1 min-w-0 space-y-2">
-                          <input
-                            className="w-full px-2 py-1 border rounded-lg"
-                            value={module.name}
-                            onChange={(e) => renameModule(module.id, e.target.value)}
-                          />
-                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
-                            <span>{module.neurons.length} neurons</span>
-                            <span>{module.edges.length} edges</span>
-                            <span>{module.inputNeuronIds.length} inputs</span>
-                            <span>{module.outputNeuronIds.length} outputs</span>
-                          </div>
-                        </div>
-                        {isActive && (
-                          <span className="shrink-0 rounded-full bg-black px-2 py-0.5 text-xs font-medium text-white">
-                            Editing
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-2 border-t pt-2">
-                        <button
-                          className={`px-3 py-1 rounded-full border ${isActive ? "bg-black text-white" : ""}`}
-                          onClick={() => openModuleEditor(module)}
-                        >
-                          {isActive ? "Open Editor" : "Edit"}
-                        </button>
-                        <button className="px-3 py-1 rounded-full border" onClick={() => instantiateModule(module)}>
-                          Place on Board
-                        </button>
-                        <button className="px-3 py-1 rounded-full border" onClick={() => deleteModuleById(module.id)}>
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {activeModuleId && (
-            <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-lg font-semibold">
-                  Module Editor{activeModule ? ` — ${activeModule.name}` : ""}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    className={`px-3 py-1 rounded-full border ${moduleMode === "select" ? "bg-black text-white" : ""}`}
-                    onClick={() => {
-                      setModuleMode("select");
-                      cancelModuleConnect();
-                    }}
-                  >
-                    Select
-                  </button>
-                  <button
-                    className={`px-3 py-1 rounded-full border ${moduleMode === "connect" ? "bg-black text-white" : ""}`}
-                    onClick={() => {
-                      setModuleMode("connect");
-                      setModuleConnectSrc(null);
-                      setModuleConnectPoints([]);
-                    }}
-                  >
-                    Connect
-                  </button>
-                  <button className="px-3 py-1 rounded-full border" onClick={() => openModuleEditor(null)}>
-                    Close
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("hidden")}>
-                  + Hidden
-                </button>
-                <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("input")}>
-                  + Input
-                </button>
-                <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("output")}>
-                  + Output
-                </button>
-                <button
-                  className="px-3 py-1 rounded-full border"
-                  onClick={() => deleteModuleSelection()}
-                  disabled={!moduleSelectedEdgeId && moduleSelectedNodeIds.length === 0}
-                >
-                  Delete Selected
-                </button>
-              </div>
-
-              <div className="grid grid-cols-12 gap-4">
-                <div className="col-span-7 lg:col-span-8 space-y-2">
-                  <CanvasView
-                    neurons={moduleNeurons}
-                    edges={moduleEdges}
-                    selectedNodeIds={moduleSelectedNodeIds}
-                    selectedEdgeId={moduleSelectedEdgeId}
-                    canvasWidth={moduleCanvasWidth}
-                    canvasHeight={moduleCanvasHeight}
-                    mode={moduleMode}
-                    connectSrc={moduleConnectSrc}
-                    connectPoints={moduleConnectPoints}
-                    groups={[]}
-                    dynamicsPanels={[]}
-                    dynamicsData={{ sim: null, T: T }}
-                    includeColors={includeColors}
-                    stickyMultiSelect={touchMultiSelect}
-                    onSelectGroup={(group, _modifiers) => []}
-                    onNodePointerDown={handleModuleNodePointerDown}
-                    onSelectEdge={handleModuleEdgePointerDown}
-                    onClearSelection={clearModuleSelection}
-                    onMoveNodes={moveModuleNodes}
-                    onMoveLabels={moveModuleLabelOffsets}
-                    hideStandardWeights={hideStandardWeights}
-                    onBeginDrag={(_ids) => {}}
-                    onBeginLabelDrag={(_id) => {}}
-                    onBeginEdgeDrag={(_edgeId, _index) => {}}
-                    onEndDrag={() => {}}
-                    onMarqueeSelect={() => {}}
-                    onCompressGroup={() => {}}
-                    onExpandGroup={() => {}}
-                    onMovePanel={() => {}}
-                    onClosePanel={() => {}}
-                    onBeginConnect={beginModuleConnect}
-                    onCompleteConnect={completeModuleConnect}
-                    onAddWaypoint={addModuleWaypoint}
-                    onCancelConnect={cancelModuleConnect}
-                    activeEdgeHandle={moduleSelectedEdgeHandle}
-                    onSelectEdgeHandle={(edgeId, index) => {
-                      if (edgeId === null || index === null) {
-                        setModuleSelectedEdgeHandle(null);
-                      } else {
-                        setModuleSelectedEdgeHandle({ edgeId, index });
-                        setActiveSelectionContext("module");
-                      }
-                    }}
-                    onMoveEdgePoint={updateModuleEdgeWaypoint}
-                    onInsertEdgePoint={insertModuleEdgeWaypoint}
-                    onEditEdge={setModuleSelectedEdgeId}
-                    highlightedNodeIds={[]}
-                    highlightedEdgeIds={[]}
-                  />
-                  <EdgeEditor
-                    edge={moduleEdges.find((e) => e.id === moduleSelectedEdgeId) || null}
-                    onChange={setModuleWeight}
-                    onRemove={removeModuleEdge}
-                  />
-                </div>
-                <div className="col-span-5 lg:col-span-4 space-y-3">
-                  <div className="p-3 rounded-xl border bg-white space-y-2">
-                    <div className="text-lg font-semibold">Module Canvas</div>
-                    <div className="grid grid-cols-3 items-center gap-2">
-                      <label className="col-span-1">Width</label>
-                      <input
-                        className="col-span-2 px-2 py-1 border rounded-lg"
-                        type="number"
-                        min={200}
-                        step={20}
-                        value={moduleCanvasWidth}
-                        onChange={(e) => setModuleCanvasWidth(Math.max(200, Number(e.target.value)))}
-                      />
-                      <label className="col-span-1">Height</label>
-                      <input
-                        className="col-span-2 px-2 py-1 border rounded-lg"
-                        type="number"
-                        min={200}
-                        step={20}
-                        value={moduleCanvasHeight}
-                        onChange={(e) => setModuleCanvasHeight(Math.max(200, Number(e.target.value)))}
-                      />
-                    </div>
-                  </div>
-
-                  <ModuleNeuronInspector
-                    neurons={moduleNeurons}
-                    selectedIds={moduleSelectedNodeIds}
-                    inputIds={moduleInputIds}
-                    outputIds={moduleOutputIds}
-                    onLabel={setModuleLabel}
-                    onRole={setModuleRole}
-                    onInput={setModuleInput}
-                    onOutput={setModuleOutput}
-                    onLabelVisible={setModuleLabelVisibility}
-                    onLabelOffset={setModuleLabelOffset}
-                    onResetLabelOffset={resetModuleLabelOffset}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        
-
-              <br></br><br></br>
-        {/* Raster plot */}
-        <div className="p-3 rounded-2xl border shadow-sm bg-white">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-lg font-semibold">Spike Raster</div>
-          <div className="text-xs text-gray-500">Strict threshold {">"} 1; h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}</div>
-        </div>
-        {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
-        <div ref={rasterExportRef}>
-          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
-          
-        </div>
-        </div>
+        {isCanvasFullScreen ? (
+          <>
+            <div className="w-full max-w-3xl mx-auto mt-4">{controlsPanel}</div>
+            <div className="mt-4">{modulesSection}</div>
+            <div className="border-t border-gray-200 my-4" />
+            <div className="mt-4">{spikeRasterSection}</div>
+          </>
+        ) : (
+          <>
+            {modulesSection}
+            <div className="border-t border-gray-200 my-4" />
+            <div className="mt-4">{spikeRasterSection}</div>
+          </>
+        )}
 
         {/* <div className="p-3 rounded-2xl border shadow-sm bg-white">
         <div className="flex items-center justify-between mb-2">
@@ -4665,6 +4655,7 @@ function CanvasView({
   onExpandGroup = () => {},
   onMovePanel = () => {},
   onClosePanel = () => {},
+  fullWidth = false,
 }: {
   neurons: Neuron[];
   edges: Edge[];
@@ -4713,6 +4704,7 @@ function CanvasView({
   onExpandGroup?: (groupId: string) => void;
   onMovePanel: (panelId: string, x: number, y: number) => void;
   onClosePanel: (panelId: string) => void;
+  fullWidth?: boolean;
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = useState<
@@ -4814,15 +4806,25 @@ function CanvasView({
     });
   }
 
-  return (
-    <div
-      className="rounded-2xl border shadow-sm bg-white select-none mx-auto w-full"
-      style={{
+  const containerStyle: React.CSSProperties = fullWidth
+    ? {
         boxSizing: "border-box",
-        maxWidth: viewWidth + CANVAS_FRAME_PADDING * 2,
         padding: CANVAS_FRAME_PADDING,
-      }}
-    >
+        width: "100vw",
+        marginLeft: "calc(50% - 50vw)",
+        marginRight: "calc(50% - 50vw)",
+      }
+    : {
+        boxSizing: "border-box",
+        padding: CANVAS_FRAME_PADDING,
+        maxWidth: viewWidth + CANVAS_FRAME_PADDING * 2,
+      };
+  const containerClass = fullWidth
+    ? "rounded-2xl border shadow-sm bg-white select-none"
+    : "rounded-2xl border shadow-sm bg-white select-none mx-auto w-full";
+
+  return (
+    <div className={containerClass} style={containerStyle}>
       <svg
         ref={svgRef}
         viewBox={`0 0 ${viewWidth} ${viewHeight}`}
