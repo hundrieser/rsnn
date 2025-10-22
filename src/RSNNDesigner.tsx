@@ -90,6 +90,7 @@ type GroupCompressionState = {
       labelVisible: boolean;
     }
   >;
+  edgePoints: Record<string, Point[]>;
   labelVisibleBefore: boolean;
 };
 
@@ -241,7 +242,7 @@ const DEFAULT_MACRO_WIDTH = 480;
 const DEFAULT_MACRO_HEIGHT = 280;
 const DEFAULT_EDGE_WEIGHT = 2;
 const DEFAULT_CANVAS_WIDTH = 800;
-const DEFAULT_CANVAS_HEIGHT = 400;
+const DEFAULT_CANVAS_HEIGHT = 300;
 const MIN_CANVAS_DIMENSION = 200;
 const CANVAS_FRAME_PADDING = 20;
 
@@ -279,6 +280,255 @@ function sanitizeWaypoints(points?: Array<Point>): Array<Point> {
       return { x: pt.x, y: pt.y };
     })
     .filter((pt): pt is Point => pt !== null);
+}
+
+const RSNN_CLIPBOARD_HEADER = "rsnn-clipboard";
+const RSNN_CLIPBOARD_VERSION = 1;
+
+type SelectionClipboardGroup = {
+  nodeIds: string[];
+  hue: number;
+  label: string;
+  labelVisible: boolean;
+  compression: GroupCompressionState | null;
+};
+
+type SelectionClipboardMainPayload = {
+  neurons: Neuron[];
+  edges: Edge[];
+  inputTexts: Record<string, string>;
+  groups: SelectionClipboardGroup[];
+};
+
+type SelectionClipboardModulePayload = {
+  neurons: Neuron[];
+  edges: Edge[];
+  inputIds: string[];
+  outputIds: string[];
+};
+
+type RSNNClipboardEnvelope =
+  | {
+      header: typeof RSNN_CLIPBOARD_HEADER;
+      version: typeof RSNN_CLIPBOARD_VERSION;
+      kind: "main";
+      payload: SelectionClipboardMainPayload;
+    }
+  | {
+      header: typeof RSNN_CLIPBOARD_HEADER;
+      version: typeof RSNN_CLIPBOARD_VERSION;
+      kind: "module";
+      payload: SelectionClipboardModulePayload;
+    };
+
+function sanitizeClipboardPoint(value: unknown): Point | null {
+  if (!value || typeof value !== "object") return null;
+  const point = value as Record<string, unknown>;
+  const x = Number(point.x);
+  const y = Number(point.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function sanitizeClipboardNeuron(value: unknown): Neuron | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const id = typeof raw.id === "string" ? raw.id : null;
+  const role = raw.role === "input" || raw.role === "hidden" || raw.role === "output" ? (raw.role as Role) : null;
+  const x = Number(raw.x);
+  const y = Number(raw.y);
+  if (!id || !role || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const neuron: Neuron = {
+    id,
+    label: typeof raw.label === "string" ? raw.label : "N",
+    role,
+    x,
+    y,
+    labelVisible: raw.labelVisible === true,
+    labelOffsetX: Number.isFinite(raw.labelOffsetX) ? Number(raw.labelOffsetX) : 0,
+    labelOffsetY: Number.isFinite(raw.labelOffsetY) ? Number(raw.labelOffsetY) : DEFAULT_LABEL_OFFSET_Y,
+  };
+  return neuron;
+}
+
+function sanitizeClipboardEdge(value: unknown): Edge | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const id = typeof raw.id === "string" ? raw.id : null;
+  const sourceId = typeof raw.sourceId === "string" ? raw.sourceId : null;
+  const targetId = typeof raw.targetId === "string" ? raw.targetId : null;
+  const weight = Number(raw.weight);
+  if (!id || !sourceId || !targetId || !Number.isFinite(weight)) return null;
+  let points: Point[] | undefined;
+  if (Array.isArray(raw.points)) {
+    const sanitized = raw.points.map(sanitizeClipboardPoint).filter((pt): pt is Point => pt !== null);
+    if (sanitized.length) points = sanitized;
+  }
+  const edge: Edge = { id, sourceId, targetId, weight };
+  if (points && points.length) {
+    edge.points = points;
+  }
+  return edge;
+}
+
+function sanitizeClipboardGroup(value: unknown): SelectionClipboardGroup | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (!Array.isArray(raw.nodeIds)) return null;
+  const nodeIds = raw.nodeIds.filter((id): id is string => typeof id === "string");
+  if (!nodeIds.length) return null;
+  let compression: GroupCompressionState | null = null;
+  if (raw.compression && typeof raw.compression === "object") {
+    const comp = raw.compression as Record<string, unknown>;
+    const center = sanitizeClipboardPoint(comp.center);
+    const nodesRaw = comp.nodes && typeof comp.nodes === "object" ? (comp.nodes as Record<string, unknown>) : null;
+    const edgePointsRaw =
+      comp.edgePoints && typeof comp.edgePoints === "object" ? (comp.edgePoints as Record<string, unknown>) : null;
+    if (center && nodesRaw) {
+      const nodes: GroupCompressionState["nodes"] = {};
+      for (const [nodeId, nodeData] of Object.entries(nodesRaw)) {
+        if (!nodeData || typeof nodeData !== "object") continue;
+        const nd = nodeData as Record<string, unknown>;
+        const x = Number(nd.x);
+        const y = Number(nd.y);
+        const labelOffsetX = Number(nd.labelOffsetX);
+        const labelOffsetY = Number(nd.labelOffsetY);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(labelOffsetX) || !Number.isFinite(labelOffsetY)) {
+          continue;
+        }
+        nodes[nodeId] = {
+          x,
+          y,
+          labelOffsetX,
+          labelOffsetY,
+          labelVisible: nd.labelVisible === true,
+        };
+      }
+      const edgePoints: GroupCompressionState["edgePoints"] = {};
+      if (edgePointsRaw) {
+        for (const [edgeId, points] of Object.entries(edgePointsRaw)) {
+          if (!Array.isArray(points)) continue;
+          const sanitized = points.map(sanitizeClipboardPoint).filter((pt): pt is Point => pt !== null);
+          if (sanitized.length) {
+            edgePoints[edgeId] = sanitized;
+          }
+        }
+      }
+      compression = {
+        center,
+        nodes,
+        edgePoints,
+        labelVisibleBefore: comp.labelVisibleBefore === true,
+      };
+    }
+  }
+  return {
+    nodeIds,
+    hue: Number.isFinite(raw.hue) ? Number(raw.hue) : 0,
+    label: typeof raw.label === "string" ? raw.label : "",
+    labelVisible: raw.labelVisible === true,
+    compression,
+  };
+}
+
+function sanitizeMainClipboardPayload(raw: unknown): SelectionClipboardMainPayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  const neurons = Array.isArray(data.neurons)
+    ? data.neurons.map(sanitizeClipboardNeuron).filter((n): n is Neuron => n !== null)
+    : [];
+  if (!neurons.length) return null;
+  const edges = Array.isArray(data.edges)
+    ? data.edges.map(sanitizeClipboardEdge).filter((e): e is Edge => e !== null)
+    : [];
+  const groups = Array.isArray(data.groups)
+    ? data.groups.map(sanitizeClipboardGroup).filter((g): g is SelectionClipboardGroup => g !== null)
+    : [];
+  const inputTextsRaw = data.inputTexts;
+  const inputTexts: Record<string, string> = {};
+  if (inputTextsRaw && typeof inputTextsRaw === "object") {
+    for (const [key, value] of Object.entries(inputTextsRaw as Record<string, unknown>)) {
+      if (typeof key === "string" && typeof value === "string") {
+        inputTexts[key] = value;
+      }
+    }
+  }
+  return { neurons, edges, inputTexts, groups };
+}
+
+function sanitizeModuleClipboardPayload(raw: unknown): SelectionClipboardModulePayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  const neurons = Array.isArray(data.neurons)
+    ? data.neurons.map(sanitizeClipboardNeuron).filter((n): n is Neuron => n !== null)
+    : [];
+  if (!neurons.length) return null;
+  const edges = Array.isArray(data.edges)
+    ? data.edges.map(sanitizeClipboardEdge).filter((e): e is Edge => e !== null)
+    : [];
+  const inputIds = Array.isArray(data.inputIds)
+    ? data.inputIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const outputIds = Array.isArray(data.outputIds)
+    ? data.outputIds.filter((id): id is string => typeof id === "string")
+    : [];
+  return { neurons, edges, inputIds, outputIds };
+}
+
+function decodeClipboardEnvelope(text: string): RSNNClipboardEnvelope | null {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") return null;
+    const envelope = parsed as Record<string, unknown>;
+    if (envelope.header !== RSNN_CLIPBOARD_HEADER || envelope.version !== RSNN_CLIPBOARD_VERSION) return null;
+    if (envelope.kind === "main") {
+      const payload = sanitizeMainClipboardPayload(envelope.payload);
+      if (!payload) return null;
+      return {
+        header: RSNN_CLIPBOARD_HEADER,
+        version: RSNN_CLIPBOARD_VERSION,
+        kind: "main",
+        payload,
+      };
+    }
+    if (envelope.kind === "module") {
+      const payload = sanitizeModuleClipboardPayload(envelope.payload);
+      if (!payload) return null;
+      return {
+        header: RSNN_CLIPBOARD_HEADER,
+        version: RSNN_CLIPBOARD_VERSION,
+        kind: "module",
+        payload,
+      };
+    }
+  } catch (error) {
+    return null;
+  }
+  return null;
+}
+
+async function writeClipboardEnvelope(envelope: RSNNClipboardEnvelope): Promise<void> {
+  if (typeof navigator === "undefined") return;
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.writeText !== "function") return;
+  try {
+    await clipboard.writeText(JSON.stringify(envelope));
+  } catch {
+    // Ignore clipboard write failures; user gesture still keeps in-app buffer.
+  }
+}
+
+async function readClipboardEnvelope(): Promise<RSNNClipboardEnvelope | null> {
+  if (typeof navigator === "undefined") return null;
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.readText !== "function") return null;
+  try {
+    const text = await clipboard.readText();
+    return decodeClipboardEnvelope(text);
+  } catch {
+    return null;
+  }
 }
 
 function buildEdgePoints(edge: Edge, source: Neuron, target: Neuron): Point[] {
@@ -663,26 +913,11 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
   const playbackTimeoutRef = useRef<number | null>(null);
   const [hideStandardWeights, setHideStandardWeights] = useState<boolean>(false);
   const [touchMultiSelect, setTouchMultiSelect] = useState<boolean>(false);
+  const [isCanvasFullScreen, setIsCanvasFullScreen] = useState<boolean>(false);
   const [showCleanDialog, setShowCleanDialog] = useState<boolean>(false);
 
-  const copyBufferRef = useRef<{
-    neurons: Neuron[];
-    edges: Edge[];
-    inputTexts: Record<string, string>;
-    groups: Array<{
-      nodeIds: string[];
-      hue: number;
-      label: string;
-      labelVisible: boolean;
-      compression: GroupCompressionState | null;
-    }>;
-  } | null>(null);
-  const moduleCopyBufferRef = useRef<{
-    neurons: Neuron[];
-    edges: Edge[];
-    inputIds: string[];
-    outputIds: string[];
-  } | null>(null);
+  const copyBufferRef = useRef<SelectionClipboardMainPayload | null>(null);
+  const moduleCopyBufferRef = useRef<SelectionClipboardModulePayload | null>(null);
 
   const canvasWidthString = useMemo(() => String(canvasWidth), [canvasWidth]);
   const canvasHeightString = useMemo(() => String(canvasHeight), [canvasHeight]);
@@ -929,6 +1164,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             nodes: Object.fromEntries(
               Object.entries(g.compression.nodes).map(([id, data]) => [id, { ...data }])
             ),
+            edgePoints: Object.fromEntries(
+              Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                edgeId,
+                points.map((pt) => ({ ...pt })),
+              ])
+            ),
             labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
           }
         : undefined,
@@ -963,6 +1204,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               center: { ...g.compression.center },
               nodes: Object.fromEntries(
                 Object.entries(g.compression.nodes).map(([id, data]) => [id, { ...data }])
+              ),
+              edgePoints: Object.fromEntries(
+                Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                  edgeId,
+                  points.map((pt) => ({ ...pt })),
+                ])
               ),
               labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
             }
@@ -1080,6 +1327,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                 center: { ...g.compression.center },
                 nodes: Object.fromEntries(
                   Object.entries(g.compression.nodes).map(([id, data]) => [id, { ...data }])
+                ),
+                edgePoints: Object.fromEntries(
+                  Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                    edgeId,
+                    points.map((pt) => ({ ...pt })),
+                  ])
                 ),
                 labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
               }
@@ -1605,17 +1858,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       .map((e) => ({ ...e, points: sanitizeWaypoints(e.points) }));
     const inputs = moduleInputIds.filter((id) => selectedSet.has(id));
     const outputs = moduleOutputIds.filter((id) => selectedSet.has(id));
-    moduleCopyBufferRef.current = {
+    const buffer: SelectionClipboardModulePayload = {
       neurons: nodes,
       edges: copiedEdges,
       inputIds: inputs,
       outputIds: outputs,
     };
+    moduleCopyBufferRef.current = buffer;
+    void writeClipboardEnvelope({
+      header: RSNN_CLIPBOARD_HEADER,
+      version: RSNN_CLIPBOARD_VERSION,
+      kind: "module",
+      payload: buffer,
+    });
     return true;
   }
 
-  function pasteModuleSelection(): boolean {
-    const buffer = moduleCopyBufferRef.current;
+  function pasteModuleSelectionFromBuffer(buffer: SelectionClipboardModulePayload | null | undefined): boolean {
     if (!buffer || !buffer.neurons.length) return false;
     const offsetX = GRID_SIZE * 3;
     const offsetY = GRID_SIZE * 3;
@@ -1648,6 +1907,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       } as Neuron;
     });
     if (!newNeurons.length) return false;
+    const edgeIdMap = new Map<string, string>();
     const newEdges = buffer.edges
       .map((edge) => {
         const sourceId = idMap.get(edge.sourceId);
@@ -1658,7 +1918,9 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           y: clamp(snapToGrid(pt.y + offsetY), minY, maxY),
         }));
         const points = transformed.length ? transformed : undefined;
-        return { id: uid("e"), sourceId, targetId, weight: edge.weight, points } as Edge;
+        const newEdgeId = uid("e");
+        edgeIdMap.set(edge.id, newEdgeId);
+        return { id: newEdgeId, sourceId, targetId, weight: edge.weight, points } as Edge;
       })
       .filter((edge): edge is Edge => !!edge);
     setModuleNeurons((prev) => [...prev, ...newNeurons]);
@@ -1683,6 +1945,20 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       setModuleOutputIds((prev) => Array.from(new Set([...prev, ...newOutputIds])));
     }
     return true;
+  }
+
+  function pasteModuleSelection(): boolean {
+    return pasteModuleSelectionFromBuffer(moduleCopyBufferRef.current);
+  }
+
+  async function pasteModuleSelectionFromClipboard(): Promise<boolean> {
+    const envelope = await readClipboardEnvelope();
+    if (envelope?.kind === "module") {
+      moduleCopyBufferRef.current = envelope.payload;
+      const applied = pasteModuleSelectionFromBuffer(envelope.payload);
+      if (applied) return true;
+    }
+    return pasteModuleSelectionFromBuffer(moduleCopyBufferRef.current);
   }
 
   function handleModuleNodePointerDown(
@@ -2002,6 +2278,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                       .filter(([id]) => !toRemove.has(id))
                       .map(([id, data]) => [id, { ...data }])
                   ),
+                  edgePoints: Object.fromEntries(
+                    Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                      edgeId,
+                      points.map((pt) => ({ ...pt })),
+                    ])
+                  ),
                   labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
                 }
               : undefined;
@@ -2016,6 +2298,88 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       );
     }
     setSelectedEdgeId(null);
+    setSelectedNodeIds([]);
+    setSelectedEdgeHandle(null);
+    setActiveSelectionContext("main");
+    return true;
+  }
+
+  function collapseSelectedNeuron(): boolean {
+    if (isRestoringRef.current) return false;
+    if (selectedEdgeId) return false;
+    if (selectedNodeIds.length !== 1) return false;
+    const neuronId = selectedNodeIds[0];
+    const incomingEdges = edges.filter((edge) => edge.targetId === neuronId);
+    const outgoingEdges = edges.filter((edge) => edge.sourceId === neuronId);
+    if (incomingEdges.length !== 1 || outgoingEdges.length !== 1) return false;
+    const incomingEdge = incomingEdges[0];
+    const outgoingEdge = outgoingEdges[0];
+    const sourceId = incomingEdge.sourceId;
+    const targetId = outgoingEdge.targetId;
+    if (!sourceId || !targetId) return false;
+    if (sourceId === targetId) return false;
+    recordSnapshot();
+    // Average the weights of incoming/outgoing edges for the new combined connection
+    const combinedWeight = (incomingEdge.weight + outgoingEdge.weight) / 2;
+    const toRemove = new Set([neuronId]);
+    let createdEdgeId: string | null = null;
+    setEdges((prevEdges) => {
+      const nextEdges = prevEdges.filter(
+        (edge) =>
+          edge.id !== incomingEdge.id &&
+          edge.id !== outgoingEdge.id &&
+          edge.sourceId !== neuronId &&
+          edge.targetId !== neuronId
+      );
+      const existingIndex = nextEdges.findIndex((edge) => edge.sourceId === sourceId && edge.targetId === targetId);
+      if (existingIndex >= 0) {
+        const existing = nextEdges[existingIndex];
+        createdEdgeId = existing.id;
+        nextEdges[existingIndex] = { ...existing, weight: combinedWeight, points: undefined };
+      } else {
+        createdEdgeId = uid("e");
+        nextEdges.push({
+          id: createdEdgeId,
+          sourceId,
+          targetId,
+          weight: combinedWeight,
+        });
+      }
+      return nextEdges;
+    });
+    setDynamicsPanels((prev) => prev.filter((panel) => !toRemove.has(panel.neuronId)));
+    setNeurons((ns) => ns.filter((n) => !toRemove.has(n.id)));
+    setGroups((gs) =>
+      gs
+        .map((g) => {
+          const remainingIds = g.nodeIds.filter((id) => !toRemove.has(id));
+          const compression = g.compression
+            ? {
+                center: { ...g.compression.center },
+                nodes: Object.fromEntries(
+                  Object.entries(g.compression.nodes)
+                    .filter(([id]) => !toRemove.has(id))
+                    .map(([id, data]) => [id, { ...data }])
+                ),
+                edgePoints: Object.fromEntries(
+                  Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                    edgeId,
+                    points.map((pt) => ({ ...pt })),
+                  ])
+                ),
+                labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
+              }
+            : undefined;
+          return {
+            ...g,
+            nodeIds: remainingIds,
+            labelVisible: g.labelVisible === true,
+            compression: compression && Object.keys(compression.nodes).length >= 2 ? compression : undefined,
+          };
+        })
+        .filter((g) => g.nodeIds.length >= 2)
+    );
+    setSelectedEdgeId(createdEdgeId);
     setSelectedNodeIds([]);
     setSelectedEdgeHandle(null);
     setActiveSelectionContext("main");
@@ -2242,6 +2606,26 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         },
       ])
     );
+    const groupNodeSet = new Set(Object.keys(stored));
+    const edgePointStore: Record<string, Point[]> = {};
+    for (const edge of edges) {
+      if (!edge || !edge.points || !edge.points.length) continue;
+      if (!groupNodeSet.has(edge.sourceId) && !groupNodeSet.has(edge.targetId)) continue;
+      const sanitized = sanitizeWaypoints(edge.points);
+      if (!sanitized.length) continue;
+      edgePointStore[edge.id] = sanitized.map((pt) => ({ ...pt }));
+    }
+    const affectedEdgeIds = new Set(Object.keys(edgePointStore));
+    if (affectedEdgeIds.size) {
+      setEdges((prev) =>
+        prev.map((edge) =>
+          affectedEdgeIds.has(edge.id) ? { ...edge, points: [{ x: centerX, y: centerY }] } : edge
+        )
+      );
+      if (selectedEdgeHandle && affectedEdgeIds.has(selectedEdgeHandle.edgeId)) {
+        setSelectedEdgeHandle(null);
+      }
+    }
     setNeurons((ns) =>
       ns.map((n) =>
         stored[n.id]
@@ -2264,6 +2648,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               compression: {
                 center: { x: centerX, y: centerY },
                 nodes: stored,
+                edgePoints: edgePointStore,
                 labelVisibleBefore: g.labelVisible === true,
               },
               labelVisible: true,
@@ -2280,6 +2665,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     if (!group || !group.compression) return false;
     recordSnapshot();
     const saved = group.compression.nodes;
+    const savedEdgePoints = group.compression.edgePoints ?? {};
+    const edgeRestoreEntries = Object.entries(savedEdgePoints);
+    if (edgeRestoreEntries.length) {
+      const restoreMap = new Map(
+        edgeRestoreEntries.map(([edgeId, points]) => [edgeId, points.map((pt) => ({ ...pt }))])
+      );
+      setEdges((prev) =>
+        prev.map((edge) => {
+          const points = restoreMap.get(edge.id);
+          if (!points) return edge;
+          return { ...edge, points };
+        })
+      );
+      if (selectedEdgeHandle && restoreMap.has(selectedEdgeHandle.edgeId)) {
+        setSelectedEdgeHandle(null);
+      }
+    }
     const labelVisibleBefore = group.compression.labelVisibleBefore ?? (group.labelVisible === true);
     setNeurons((ns) =>
       ns.map((n) =>
@@ -2338,6 +2740,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                   Object.entries(g.compression.nodes)
                     .filter(([id]) => validIds.has(id))
                     .map(([id, data]) => [id, { ...data }])
+                ),
+                edgePoints: Object.fromEntries(
+                  Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                    edgeId,
+                    points.map((pt) => ({ ...pt })),
+                  ])
                 ),
                 labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
               }
@@ -2574,20 +2982,60 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     const maxY = Math.max(NODE_RADIUS, canvasHeight - NODE_RADIUS);
     const prevPositions = new Map<string, { x: number; y: number }>();
     const currentById = new Map(neurons.map((n) => [n.id, n]));
-    const clampedUpdates = updates.map((u) => {
+    const updateById = new Map(updates.map((u) => [u.id, u]));
+    const groupMoveNodeIds = new Set<string>();
+    const TRANSLATION_EPSILON = 1e-6;
+
+    for (const group of groups) {
+      if (!group.nodeIds.length) continue;
+      let baseDx: number | null = null;
+      let baseDy: number | null = null;
+      let allMembersMoved = true;
+      for (const nodeId of group.nodeIds) {
+        const prev = currentById.get(nodeId);
+        const target = updateById.get(nodeId);
+        if (!prev || !target) {
+          allMembersMoved = false;
+          break;
+        }
+        const dx = target.x - prev.x;
+        const dy = target.y - prev.y;
+        if (baseDx === null || baseDy === null) {
+          baseDx = dx;
+          baseDy = dy;
+          continue;
+        }
+        if (Math.abs(dx - baseDx) > TRANSLATION_EPSILON || Math.abs(dy - baseDy) > TRANSLATION_EPSILON) {
+          allMembersMoved = false;
+          break;
+        }
+      }
+      if (allMembersMoved && baseDx !== null && baseDy !== null) {
+        for (const nodeId of group.nodeIds) {
+          groupMoveNodeIds.add(nodeId);
+        }
+      }
+    }
+
+    const normalizedUpdates = updates.map((u) => {
       const prev = currentById.get(u.id);
       if (prev) prevPositions.set(u.id, { x: prev.x, y: prev.y });
+      const allowOutside = groupMoveNodeIds.has(u.id);
+      const rawX = allowOutside ? u.x : clamp(u.x, minX, maxX);
+      const rawY = allowOutside ? u.y : clamp(u.y, minY, maxY);
+      const snappedX = snapToGrid(rawX);
+      const snappedY = snapToGrid(rawY);
       return {
         id: u.id,
-        x: clamp(snapToGrid(clamp(u.x, minX, maxX)), minX, maxX),
-        y: clamp(snapToGrid(clamp(u.y, minY, maxY)), minY, maxY),
+        x: allowOutside ? snappedX : clamp(snappedX, minX, maxX),
+        y: allowOutside ? snappedY : clamp(snappedY, minY, maxY),
       };
     });
-    const map = new Map(clampedUpdates.map((u) => [u.id, u]));
+    const map = new Map(normalizedUpdates.map((u) => [u.id, u]));
     setNeurons((ns) => ns.map((n) => (map.has(n.id) ? { ...n, ...map.get(n.id)! } : n)));
 
     const deltaById = new Map<string, { dx: number; dy: number }>();
-    for (const { id } of clampedUpdates) {
+    for (const { id } of normalizedUpdates) {
       const prev = prevPositions.get(id);
       const next = map.get(id);
       if (!prev || !next) continue;
@@ -2597,7 +3045,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       deltaById.set(id, { dx, dy });
     }
 
-    const movedIds = new Set(clampedUpdates.map((u) => u.id));
+    const movedIds = new Set(normalizedUpdates.map((u) => u.id));
     const boardMinX = minX;
     const boardMinY = minY;
     const boardMaxX = maxX;
@@ -2624,10 +3072,18 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             if (!waypoints.length) return edge;
             const { dx, dy } = translation;
             if (dx === 0 && dy === 0) return edge;
-            const translated = waypoints.map((pt) => ({
-              x: clamp(pt.x + dx, boardMinX, boardMaxX),
-              y: clamp(pt.y + dy, boardMinY, boardMaxY),
-            }));
+            const allowOutside = groupMoveNodeIds.has(edge.sourceId) && groupMoveNodeIds.has(edge.targetId);
+            const translated = waypoints.map((pt) => {
+              const x = pt.x + dx;
+              const y = pt.y + dy;
+              if (allowOutside) {
+                return { x, y };
+              }
+              return {
+                x: clamp(x, boardMinX, boardMaxX),
+                y: clamp(y, boardMinY, boardMaxY),
+              };
+            });
             return { ...edge, points: translated };
           })
         );
@@ -2658,16 +3114,45 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           const updatedNodes: GroupCompressionState["nodes"] = Object.fromEntries(
             Object.entries(g.compression.nodes).map(([nodeId, data]) => [nodeId, { ...data, x: data.x + dx, y: data.y + dy }])
           );
+          const updatedEdgePoints = Object.fromEntries(
+            Object.entries(g.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+              edgeId,
+              points.map((pt) => ({
+                x: clamp(pt.x + dx, boardMinX, boardMaxX),
+                y: clamp(pt.y + dy, boardMinY, boardMaxY),
+              })),
+            ])
+          );
           return {
             ...g,
             compression: {
               center: { x: g.compression.center.x + dx, y: g.compression.center.y + dy },
               nodes: updatedNodes,
+              edgePoints: updatedEdgePoints,
               labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
             },
           };
         })
       );
+      const collapsedEdgeCenters = new Map<string, { x: number; y: number }>();
+      for (const trans of groupTranslations) {
+        const group = groups.find((g) => g.id === trans.groupId);
+        if (!group?.compression) continue;
+        const newCenterX = group.compression.center.x + trans.dx;
+        const newCenterY = group.compression.center.y + trans.dy;
+        for (const edgeId of Object.keys(group.compression.edgePoints ?? {})) {
+          collapsedEdgeCenters.set(edgeId, { x: newCenterX, y: newCenterY });
+        }
+      }
+      if (collapsedEdgeCenters.size) {
+        setEdges((prev) =>
+          prev.map((edge) => {
+            const center = collapsedEdgeCenters.get(edge.id);
+            if (!center) return edge;
+            return { ...edge, points: [{ x: center.x, y: center.y }] };
+          })
+        );
+      }
     }
   }
 
@@ -2799,6 +3284,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     const copiedEdges = edges
       .filter((e) => selectedSet.has(e.sourceId) && selectedSet.has(e.targetId))
       .map((e) => ({ ...e, points: sanitizeWaypoints(e.points) }));
+    const selectedEdgeIds = new Set(copiedEdges.map((e) => e.id));
     const copiedGroups = groups
       .filter((g) => g.nodeIds.every((id) => selectedSet.has(id)))
       .map((g) => ({
@@ -2814,6 +3300,11 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                   .filter(([id]) => selectedSet.has(id))
                   .map(([id, data]) => [id, { ...data }])
               ),
+              edgePoints: Object.fromEntries(
+                Object.entries(g.compression.edgePoints ?? {})
+                  .filter(([edgeId]) => selectedEdgeIds.has(edgeId))
+                  .map(([edgeId, points]) => [edgeId, points.map((pt) => ({ ...pt }))])
+              ),
               labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
             }
           : null,
@@ -2824,12 +3315,23 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         inputs[node.id] = inputText[node.id] ?? "";
       }
     }
-    copyBufferRef.current = { neurons: nodes, edges: copiedEdges, inputTexts: inputs, groups: copiedGroups };
+    const buffer: SelectionClipboardMainPayload = {
+      neurons: nodes,
+      edges: copiedEdges,
+      inputTexts: inputs,
+      groups: copiedGroups,
+    };
+    copyBufferRef.current = buffer;
+    void writeClipboardEnvelope({
+      header: RSNN_CLIPBOARD_HEADER,
+      version: RSNN_CLIPBOARD_VERSION,
+      kind: "main",
+      payload: buffer,
+    });
     return true;
   }
 
-  function pasteSelection(): boolean {
-    const buffer = copyBufferRef.current;
+  function pasteSelectionFromBuffer(buffer: SelectionClipboardMainPayload | null | undefined): boolean {
     if (!buffer || !buffer.neurons.length) return false;
     if (isRestoringRef.current) return false;
     recordSnapshot();
@@ -2864,6 +3366,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       } as Neuron;
     });
     if (!newNeurons.length) return false;
+    const edgeIdMap = new Map<string, string>();
     const newEdges = buffer.edges
       .map((edge) => {
         const sourceId = idMap.get(edge.sourceId);
@@ -2874,7 +3377,9 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           y: clamp(snapToGrid(pt.y + offsetY), minY, maxY),
         }));
         const points = transformed.length ? transformed : undefined;
-        return { id: uid("e"), sourceId, targetId, weight: edge.weight, points } as Edge;
+        const newEdgeId = uid("e");
+        edgeIdMap.set(edge.id, newEdgeId);
+        return { id: newEdgeId, sourceId, targetId, weight: edge.weight, points } as Edge;
       })
       .filter((edge): edge is Edge => !!edge);
     setNeurons((prev) => [...prev, ...newNeurons]);
@@ -2924,6 +3429,24 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                       })
                       .filter((entry): entry is [string, GroupCompressionState["nodes"][string]] => Boolean(entry))
                   ),
+                  edgePoints: Object.fromEntries(
+                    Object.entries(g.compression.edgePoints ?? {})
+                      .map(([edgeId, points]) => {
+                        const mappedEdgeId = edgeIdMap.get(edgeId);
+                        if (!mappedEdgeId) return null;
+                        const transformedPoints = points
+                          .map<Point | null>((pt) => {
+                            const px = clamp(snapToGrid(pt.x + offsetX), minX, maxX);
+                            const py = clamp(snapToGrid(pt.y + offsetY), minY, maxY);
+                            if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+                            return { x: px, y: py };
+                          })
+                          .filter((pt): pt is Point => pt !== null);
+                        if (!transformedPoints.length) return null;
+                        return [mappedEdgeId, transformedPoints];
+                      })
+                      .filter((entry): entry is [string, Point[]] => Boolean(entry))
+                  ),
                   labelVisibleBefore: g.compression.labelVisibleBefore ?? (g.labelVisible === true),
                 }
               : null,
@@ -2938,6 +3461,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             compression: {
               center: { x: number; y: number };
               nodes: Record<string, { x: number; y: number; labelOffsetX: number; labelOffsetY: number; labelVisible: boolean }>;
+              edgePoints: Record<string, Point[]>;
               labelVisibleBefore: boolean;
             } | null;
           } => Boolean(g)
@@ -2961,6 +3485,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                       nodes: Object.fromEntries(
                         Object.entries(proto.compression.nodes).map(([id, data]) => [id, { ...data }])
                       ),
+                      edgePoints: Object.fromEntries(
+                        Object.entries(proto.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                          edgeId,
+                          points.map((pt) => ({ ...pt })),
+                        ])
+                      ),
                       labelVisibleBefore: proto.compression.labelVisibleBefore,
                     }
                   : undefined,
@@ -2971,6 +3501,20 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
       }
     }
     return true;
+  }
+
+  function pasteSelection(): boolean {
+    return pasteSelectionFromBuffer(copyBufferRef.current);
+  }
+
+  async function pasteSelectionFromClipboard(): Promise<boolean> {
+    const envelope = await readClipboardEnvelope();
+    if (envelope?.kind === "main") {
+      copyBufferRef.current = envelope.payload;
+      const applied = pasteSelectionFromBuffer(envelope.payload);
+      if (applied) return true;
+    }
+    return pasteSelectionFromBuffer(copyBufferRef.current);
   }
 
   useEffect(() => {
@@ -3008,9 +3552,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           activeSelectionContext === "module" ? copyModuleSelection() : copySelection();
         if (handled) event.preventDefault();
       } else if ((event.metaKey || event.ctrlKey) && key === "v") {
-        const handled =
-          activeSelectionContext === "module" ? pasteModuleSelection() : pasteSelection();
-        if (handled) event.preventDefault();
+        event.preventDefault();
+        if (activeSelectionContext === "module") {
+          void pasteModuleSelectionFromClipboard();
+        } else {
+          void pasteSelectionFromClipboard();
+        }
       } else if ((event.metaKey || event.ctrlKey) && key === "g" && !event.shiftKey) {
         let handled = false;
         if (activeSelectionContext !== "module") {
@@ -3032,8 +3579,11 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             handled = true;
           }
         } else {
-          if (removeSelectedEdgeWaypoint()) handled = true;
-          else if (selectedEdgeId || selectedNodeIds.length) {
+          if (event.shiftKey && collapseSelectedNeuron()) {
+            handled = true;
+          } else if (removeSelectedEdgeWaypoint()) {
+            handled = true;
+          } else if (selectedEdgeId || selectedNodeIds.length) {
             deleteSelected();
             handled = true;
           }
@@ -3050,10 +3600,11 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     copySelection,
     deleteModuleSelection,
     deleteSelected,
+    collapseSelectedNeuron,
     moduleSelectedEdgeId,
     moduleSelectedNodeIds,
-    pasteModuleSelection,
-    pasteSelection,
+    pasteModuleSelectionFromClipboard,
+    pasteSelectionFromClipboard,
     removeModuleSelectedEdgeWaypoint,
     removeSelectedEdgeWaypoint,
     selectedEdgeId,
@@ -3080,6 +3631,12 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                   labelOffsetY: data.labelOffsetY,
                   labelVisible: data.labelVisible,
                 },
+              ])
+            ),
+            edgePoints: Object.fromEntries(
+              Object.entries(group.compression.edgePoints ?? {}).map(([edgeId, points]) => [
+                edgeId,
+                points.map((pt) => ({ x: pt.x, y: pt.y })),
               ])
             ),
             labelVisibleBefore: group.compression.labelVisibleBefore === true,
@@ -3234,6 +3791,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               const centerY = Number(rawCompression.center?.y);
               if (Number.isFinite(centerX) && Number.isFinite(centerY) && rawCompression.nodes && typeof rawCompression.nodes === "object") {
                 const compressionNodes: GroupCompressionState["nodes"] = {};
+                const compressionEdgePoints: Record<string, Point[]> = {};
                 for (const [nodeId, nodeData] of Object.entries(rawCompression.nodes as Record<string, any>)) {
                   if (!neuronIds.has(nodeId)) continue;
                   if (!nodeData || typeof nodeData !== "object") continue;
@@ -3253,9 +3811,27 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
                   };
                 }
                 if (Object.keys(compressionNodes).length >= 2) {
+                  if (rawCompression.edgePoints && typeof rawCompression.edgePoints === "object") {
+                    for (const [edgeId, value] of Object.entries(rawCompression.edgePoints as Record<string, any>)) {
+                      if (typeof edgeId !== "string") continue;
+                      if (!Array.isArray(value)) continue;
+                      const sanitizedPoints = value
+                        .map((pt: any) => {
+                          const px = Number(pt?.x);
+                          const py = Number(pt?.y);
+                          if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+                          return { x: px, y: py };
+                        })
+                        .filter((pt: Point | null): pt is Point => pt !== null);
+                      if (sanitizedPoints.length) {
+                        compressionEdgePoints[edgeId] = sanitizedPoints;
+                      }
+                    }
+                  }
                   compression = {
                     center: { x: centerX, y: centerY },
                     nodes: compressionNodes,
+                    edgePoints: compressionEdgePoints,
                     labelVisibleBefore:
                       rawCompression.labelVisibleBefore === undefined
                         ? labelVisible
@@ -3430,7 +4006,30 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           .filter((module: Module | null): module is Module => module !== null);
       }
 
-      setModules(importedModules);
+      if (importedModules.length) {
+        setModules((prevModules) => {
+          if (!importedModules.length) return prevModules;
+          const existingIds = new Set(prevModules.map((module) => module.id));
+          const existingNames = new Set(prevModules.map((module) => module.name));
+          const appended = importedModules.map((module) => {
+            let nextId = module.id;
+            while (existingIds.has(nextId)) {
+              nextId = uid("module");
+            }
+            existingIds.add(nextId);
+
+            const baseName = (module.name || "").trim() || "Module";
+            const nextName = uniqueLabel(baseName, existingNames);
+            return {
+              ...module,
+              id: nextId,
+              name: nextName,
+            };
+          });
+          if (!appended.length) return prevModules;
+          return [...prevModules, ...appended];
+        });
+      }
       openModuleEditor(null);
 
       setSelectedNodeIds([]);
@@ -3746,6 +4345,395 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     }, 300);
   }
 
+  const controlsPanel = (
+    <div className="space-y-4">
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">Simulation</div>
+        <div className="grid grid-cols-3 items-center gap-2">
+          <label className="col-span-1">Horizon T</label>
+          <input
+            className="col-span-2 px-2 py-1 border rounded-lg"
+            type="number"
+            min={0.1}
+            step={0.1}
+            value={T}
+            onChange={(e) => setT(Number(e.target.value))}
+          />
+
+          <label className="col-span-1">Memory h</label>
+          <div className="col-span-2 flex items-center gap-2">
+            <select className="px-2 py-1 border rounded-lg" value={hKind} onChange={(e) => setHKind(e.target.value as any)}>
+              <option value="finite">finite</option>
+              <option value="zero">0</option>
+              <option value="infty">∞</option>
+            </select>
+            {hKind === "finite" && (
+              <input
+                className="px-2 py-1 border rounded-lg w-24"
+                type="number"
+                min={0}
+                step={0.1}
+                value={hVal}
+                onChange={(e) => setHVal(Number(e.target.value))}
+              />
+            )}
+          </div>
+
+          <div className="col-span-3 flex gap-2">
+            <button className="px-3 py-1 rounded-full border bg-black text-white" onClick={runSimulation}>
+              Run
+            </button>
+            <button className="px-3 py-1 rounded-full border" onClick={animateButtonAction} title={animateButtonTitle}>
+              {animateButtonLabel}
+            </button>
+            {hasAnimation && (
+              <button className="px-3 py-1 rounded-full border" onClick={stopAnimation}>
+                {isAnimating ? "Stop" : "Hide"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">Canvas Layout</div>
+        <div className="grid grid-cols-3 items-center gap-2">
+          <label className="col-span-1">Width</label>
+          <input
+            className="col-span-2 px-2 py-1 border rounded-lg"
+            type="number"
+            min={MIN_CANVAS_DIMENSION}
+            step={50}
+            value={canvasWidthInput}
+            onChange={(e) => setCanvasWidthInput(e.target.value)}
+            onKeyDown={handleCanvasSizeKeyDown}
+          />
+
+          <label className="col-span-1">Height</label>
+          <input
+            className="col-span-2 px-2 py-1 border rounded-lg"
+            type="number"
+            min={MIN_CANVAS_DIMENSION}
+            step={50}
+            value={canvasHeightInput}
+            onChange={(e) => setCanvasHeightInput(e.target.value)}
+            onKeyDown={handleCanvasSizeKeyDown}
+          />
+          <button type="button" className="col-span-3 px-3 py-1 rounded-full border" onClick={applyCanvasSize} disabled={!isCanvasSizeDirty}>
+            Apply
+          </button>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">File I/O</div>
+        <div className="flex flex-wrap gap-2">
+          <button className="px-3 py-1 rounded-full border" onClick={exportCanvasPdf}>
+            Export Canvas as PDF
+          </button>
+          <button
+            className="px-3 py-1 rounded-full border"
+            onClick={exportAnimationPdfs}
+            disabled={!hasAnimation || isExportingAnimationPdfs}
+            title={
+              hasAnimation
+                ? isExportingAnimationPdfs
+                  ? "Generating PDFs for each animation step..."
+                  : "Select a folder to export a PDF for each animation frame."
+                : "Run a spike animation to enable per-frame PDF export."
+            }
+          >
+            {isExportingAnimationPdfs ? "Exporting..." : "Export Animation PDFs"}
+          </button>
+          <button className="px-3 py-1 rounded-full border" onClick={exportState}>
+            Export JSON
+          </button>
+          <button className="px-3 py-1 rounded-full border" onClick={triggerImport}>
+            Import JSON
+          </button>
+          <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={onImportInputChange} />
+        </div>
+        <label
+          className={`mt-2 flex items-center gap-2 text-xs text-gray-600 ${hasAnimation ? "" : "opacity-60"}`}
+          title={
+            hasAnimation
+              ? "Toggle whether the animation counter overlay is included in PDF canvas exports."
+              : "Run a simulation with spike animation to enable the counter overlay in PDF exports."
+          }
+        >
+          <input
+            type="checkbox"
+            className="accent-black"
+            checked={includeAnimationCounterInPdf}
+            disabled={!hasAnimation}
+            onChange={(e) => setIncludeAnimationCounterInPdf(e.target.checked)}
+          />
+          Include animation counter overlay in PDF
+        </label>
+      </div>
+
+      <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
+        <div className="text-lg font-semibold">Input Spike Trains</div>
+        {neurons.filter((n) => n.role === "input").length === 0 && <div className="text-gray-500">Add an Input neuron to edit trains.</div>}
+        <div className="space-y-3 max-h-72 overflow-auto pr-1">
+          {neurons
+            .filter((n) => n.role === "input")
+            .map((n) => (
+              <div key={n.id} className="border rounded-xl p-2">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="font-medium">{n.label}</div>
+                  <div className="text-xs text-gray-500">({n.id.slice(-4)})</div>
+                </div>
+                <label className="text-xs text-gray-600">times (s): space/comma separated</label>
+                <textarea
+                  className="w-full mt-1 p-2 border rounded-lg font-mono text-xs"
+                  rows={2}
+                  placeholder="e.g., 0.5 1 1.5 3 4.2"
+                  value={inputText[n.id] || ""}
+                  onChange={(e) => setInputText((prev) => ({ ...prev, [n.id]: e.target.value }))}
+                />
+                <div className="flex items-center gap-2 mt-1">
+                  <button
+                    className="px-2 py-1 border rounded-full"
+                    onClick={() => setInputText((prev) => ({ ...prev, [n.id]: jitterPoissonText(T, 3) }))}
+                    title="Fill with a Poisson(λ=3 Hz) sample over [0,T]"
+                  >
+                    Poisson λ=3
+                  </button>
+                  <button
+                    className="px-2 py-1 border rounded-full"
+                    onClick={() => setInputText((prev) => ({ ...prev, [n.id]: integerSpikeText(T) }))}
+                    title="Fill with spikes at integer seconds up to T"
+                  >
+                    Integer times
+                  </button>
+                  <button className="px-2 py-1 border rounded-full" onClick={() => setInputText((prev) => ({ ...prev, [n.id]: "" }))}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const modulesSection = (
+    <>
+      <div className="border-t border-gray-200 my-6" />
+      <div className="space-y-4">
+        <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-lg font-semibold">Modules</div>
+            <button className="px-3 py-1 rounded-full border" onClick={createModule}>
+              + New Module
+            </button>
+          </div>
+          {modules.length === 0 ? (
+            <div className="text-gray-500 text-sm">Create a module to reuse neuron motifs on the main canvas.</div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {modules.map((module) => {
+                const isActive = module.id === activeModuleId;
+                return (
+                  <div key={module.id} className={`border rounded-xl p-3 flex flex-col gap-3 ${isActive ? "border-black" : "border-gray-200"}`}>
+                    <div className="flex items-start gap-3">
+                      <div className="flex-1 min-w-0 space-y-2">
+                        <input className="w-full px-2 py-1 border rounded-lg" value={module.name} onChange={(e) => renameModule(module.id, e.target.value)} />
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
+                          <span>{module.neurons.length} neurons</span>
+                          <span>{module.edges.length} edges</span>
+                          <span>{module.inputNeuronIds.length} inputs</span>
+                          <span>{module.outputNeuronIds.length} outputs</span>
+                        </div>
+                      </div>
+                      {isActive && <span className="shrink-0 rounded-full bg-black px-2 py-0.5 text-xs font-medium text-white">Editing</span>}
+                    </div>
+                    <div className="flex flex-wrap gap-2 border-t pt-2">
+                      <button
+                        className={`px-3 py-1 rounded-full border ${isActive ? "bg-black text-white" : ""}`}
+                        onClick={() => openModuleEditor(module)}
+                      >
+                        {isActive ? "Open Editor" : "Edit"}
+                      </button>
+                      <button className="px-3 py-1 rounded-full border" onClick={() => instantiateModule(module)}>
+                        Place on Board
+                      </button>
+                      <button className="px-3 py-1 rounded-full border" onClick={() => deleteModuleById(module.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {activeModuleId && (
+          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-lg font-semibold">Module Editor{activeModule ? ` — ${activeModule.name}` : ""}</div>
+              <div className="flex gap-2">
+                <button
+                  className={`px-3 py-1 rounded-full border ${moduleMode === "select" ? "bg-black text-white" : ""}`}
+                  onClick={() => {
+                    setModuleMode("select");
+                    cancelModuleConnect();
+                  }}
+                >
+                  Select
+                </button>
+                <button
+                  className={`px-3 py-1 rounded-full border ${moduleMode === "connect" ? "bg-black text-white" : ""}`}
+                  onClick={() => {
+                    setModuleMode("connect");
+                    setModuleConnectSrc(null);
+                    setModuleConnectPoints([]);
+                  }}
+                >
+                  Connect
+                </button>
+                <button className="px-3 py-1 rounded-full border" onClick={() => openModuleEditor(null)}>
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("hidden")}>
+                + Hidden
+              </button>
+              <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("input")}>
+                + Input
+              </button>
+              <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("output")}>
+                + Output
+              </button>
+              <button
+                className="px-3 py-1 rounded-full border"
+                onClick={() => deleteModuleSelection()}
+                disabled={!moduleSelectedEdgeId && moduleSelectedNodeIds.length === 0}
+              >
+                Delete Selected
+              </button>
+            </div>
+
+            <div className="grid grid-cols-12 gap-4">
+              <div className="col-span-7 lg:col-span-8 space-y-2">
+                <CanvasView
+                  neurons={moduleNeurons}
+                  edges={moduleEdges}
+                  selectedNodeIds={moduleSelectedNodeIds}
+                  selectedEdgeId={moduleSelectedEdgeId}
+                  canvasWidth={moduleCanvasWidth}
+                  canvasHeight={moduleCanvasHeight}
+                  mode={moduleMode}
+                  connectSrc={moduleConnectSrc}
+                  connectPoints={moduleConnectPoints}
+                  groups={[]}
+                  dynamicsPanels={[]}
+                  dynamicsData={{ sim: null, T: T }}
+                  includeColors={includeColors}
+                  stickyMultiSelect={touchMultiSelect}
+                  onSelectGroup={(group, _modifiers) => []}
+                  onNodePointerDown={handleModuleNodePointerDown}
+                  onSelectEdge={handleModuleEdgePointerDown}
+                  onClearSelection={clearModuleSelection}
+                  onMoveNodes={moveModuleNodes}
+                  onMoveLabels={moveModuleLabelOffsets}
+                  hideStandardWeights={hideStandardWeights}
+                  onBeginDrag={(_ids) => {}}
+                  onBeginLabelDrag={(_id) => {}}
+                  onBeginEdgeDrag={(_edgeId, _index) => {}}
+                  onEndDrag={() => {}}
+                  onMarqueeSelect={() => {}}
+                  onCompressGroup={() => {}}
+                  onExpandGroup={() => {}}
+                  onMovePanel={() => {}}
+                  onClosePanel={() => {}}
+                  onBeginConnect={beginModuleConnect}
+                  onCompleteConnect={completeModuleConnect}
+                  onAddWaypoint={addModuleWaypoint}
+                  onCancelConnect={cancelModuleConnect}
+                  activeEdgeHandle={moduleSelectedEdgeHandle}
+                  onSelectEdgeHandle={(edgeId, index) => {
+                    if (edgeId === null || index === null) {
+                      setModuleSelectedEdgeHandle(null);
+                    } else {
+                      setModuleSelectedEdgeHandle({ edgeId, index });
+                      setActiveSelectionContext("module");
+                    }
+                  }}
+                  onMoveEdgePoint={updateModuleEdgeWaypoint}
+                  onInsertEdgePoint={insertModuleEdgeWaypoint}
+                  onEditEdge={setModuleSelectedEdgeId}
+                  highlightedNodeIds={[]}
+                  highlightedEdgeIds={[]}
+                />
+                <EdgeEditor edge={moduleEdges.find((e) => e.id === moduleSelectedEdgeId) || null} onChange={setModuleWeight} onRemove={removeModuleEdge} />
+              </div>
+              <div className="col-span-5 lg:col-span-4 space-y-3">
+                <div className="p-3 rounded-xl border bg-white space-y-2">
+                  <div className="text-lg font-semibold">Module Canvas</div>
+                  <div className="grid grid-cols-3 items-center gap-2">
+                    <label className="col-span-1">Width</label>
+                    <input
+                      className="col-span-2 px-2 py-1 border rounded-lg"
+                      type="number"
+                      min={200}
+                      step={20}
+                      value={moduleCanvasWidth}
+                      onChange={(e) => setModuleCanvasWidth(Math.max(200, Number(e.target.value)))}
+                    />
+                    <label className="col-span-1">Height</label>
+                    <input
+                      className="col-span-2 px-2 py-1 border rounded-lg"
+                      type="number"
+                      min={200}
+                      step={20}
+                      value={moduleCanvasHeight}
+                      onChange={(e) => setModuleCanvasHeight(Math.max(200, Number(e.target.value)))}
+                    />
+                  </div>
+                </div>
+
+                <ModuleNeuronInspector
+                  neurons={moduleNeurons}
+                  selectedIds={moduleSelectedNodeIds}
+                  inputIds={moduleInputIds}
+                  outputIds={moduleOutputIds}
+                  onLabel={setModuleLabel}
+                  onRole={setModuleRole}
+                  onInput={setModuleInput}
+                  onOutput={setModuleOutput}
+                  onLabelVisible={setModuleLabelVisibility}
+                  onLabelOffset={setModuleLabelOffset}
+                  onResetLabelOffset={resetModuleLabelOffset}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  const spikeRasterSection = (
+    <div className="p-3 rounded-2xl border shadow-sm bg-white">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-lg font-semibold">Spike Raster</div>
+        <div className="text-xs text-gray-500">
+          Strict threshold {">"} 1; h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}
+        </div>
+      </div>
+      {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
+      <div ref={rasterExportRef}>
+        <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
+      </div>
+    </div>
+  );
+
   return (
     <div
       className="w-full text-sm"
@@ -3756,9 +4744,9 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         }
       }}
     >
-      <div className="mx-auto max-w-6xl flex flex-col gap-3 page-shell">
+      <div className="flex flex-col gap-3 page-shell max-w-6xl mx-auto">
         <header className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl font-bold min-w-0">Recurrent Spiking Neural Network Canvas</h1>
+          <h1 className="text-xl font-bold min-w-0">Spiking Neural Network Simulator      </h1>
           {onToggleTheme ? (
             <div className="theme-toggle-wrapper">
               <button className="theme-toggle-button" onClick={onToggleTheme} type="button">
@@ -3766,6 +4754,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               </button>
             </div>
           ) : null}
+          <span className="ml-auto" />
           <span className="ml-auto" />
           <button
             className={`px-3 py-1 rounded-full border transition ${
@@ -3790,6 +4779,19 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
             title="Connect nodes"
           >
             Connect
+          </button>
+          <button
+            className={`px-3 py-1 rounded-full border transition ${
+              isCanvasFullScreen ? "bg-black text-white border-black" : "bg-white text-gray-700 border-gray-300"
+            }`}
+            onClick={() => setIsCanvasFullScreen((prev) => !prev)}
+            title={
+              isCanvasFullScreen
+                ? "Restore split layout with controls beside the canvas"
+                : "Expand canvas and move controls below"
+            }
+          >
+            {isCanvasFullScreen ? "Full Screen" : "Full Screen"}
           </button>
           <button
             className={`px-3 py-1 rounded-full border transition ${
@@ -3835,17 +4837,21 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
               }}
             />
           </label>
-            <button
-            className="px-3 py-1 rounded-full border"
-            onClick={() => setShowCleanDialog(true)}
-            title="Remove all neurons, edges, and groups from the canvas"
-          >
-            Clean canvas
-          </button>
-          <div className="h-6 w-px bg-gray-300 mx-1" />
-          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("input")}>+ Input</button>
-          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("hidden")}>+ Hidden</button>
-          <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("output")}>+ Output</button>
+          <br>
+          </br><button
+              className="px-3 py-1 rounded-full border"
+              onClick={() => setShowCleanDialog(true)}
+              title="Remove all neurons, edges, and groups from the canvas"
+            >
+              Clean canvas
+            </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="h-6 w-px bg-gray-300 mx-1" />
+            <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("input")}>+ Input</button>
+            
+            <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("hidden")}>+ Hidden</button>
+            <button className="px-3 py-1 rounded-full border" onClick={() => addNeuron("output")}>+ Output</button>
+          </div>
           <button
             className="px-3 py-1 rounded-full border"
             onClick={() => deleteSelected()}
@@ -4021,66 +5027,69 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           </div>
         )}
 
-        <div className="flex flex-col xl:flex-row xl:items-start xl:justify-center gap-4">
-        {/* Canvas */}
-        <div className="w-full xl:max-w-[960px] mx-auto xl:mx-0">
-          <div ref={canvasExportRef} className="relative w-full">
-            <CanvasView
-              neurons={neurons}
-              edges={edges}
-              selectedNodeIds={selectedNodeIds}
-              selectedEdgeId={selectedEdgeId}
-              canvasWidth={canvasWidth}
-              canvasHeight={canvasHeight}
-              mode={mode}
-              connectSrc={connectSrc}
-              connectPoints={connectPoints}
-              groups={groups}
-              dynamicsPanels={dynamicsPanels}
-              dynamicsData={{ sim, T }}
-              showDynamicsHeaders={showDynamicsHeaders}
-              showOutputPotentials={showOutputPotentials}
-              includeColors={includeColors}
-              hideStandardWeights={hideStandardWeights}
-              stickyMultiSelect={touchMultiSelect}
-              onSelectGroup={(group, modifiers) => handleGroupPointerDown(group.id, modifiers)}
-              onNodePointerDown={handleNodePointerDown}
-              onNodeDoubleClick={openDynamicsPanelForNeuron}
-              onSelectEdge={handleEdgePointerDown}
-              onClearSelection={clearSelection}
-              onMoveNodes={moveNodes}
-              onMoveLabels={moveLabelOffsets}
-              onBeginDrag={(_ids) => beginNodeDrag()}
-              onBeginLabelDrag={(_id) => beginLabelDrag()}
-              onBeginEdgeDrag={() => beginEdgeDrag()}
-              onEndDrag={endDrag}
-              onMarqueeSelect={handleMarqueeSelect}
-              onCompressGroup={compressGroup}
-              onExpandGroup={expandGroup}
-              onMovePanel={moveDynamicsPanel}
-              onClosePanel={closeDynamicsPanel}
-              onBeginConnect={beginConnect}
-              onCompleteConnect={completeConnect}
-              onAddWaypoint={addConnectWaypoint}
-              onCancelConnect={cancelConnect}
-              onExitConnectMode={exitConnectMode}
-              activeEdgeHandle={selectedEdgeHandle}
-              onSelectEdgeHandle={(edgeId, index) => {
-                if (edgeId === null || index === null) {
-                  setSelectedEdgeHandle(null);
-                } else {
-                  setSelectedEdgeHandle({ edgeId, index });
-                  setActiveSelectionContext("main");
-                }
-              }}
-              onMoveEdgePoint={updateEdgeWaypoint}
-              onInsertEdgePoint={insertEdgeWaypoint}
-              onEditEdge={setSelectedEdgeId}
-              highlightedNodeIds={highlightedNodeIds}
-              highlightedEdgeIds={highlightedEdgeIds}
-              recentNodeIds={recentNodeIds}
-              recentEdgeIds={recentEdgeIds}
-            />
+        <div
+          className={`flex gap-4 ${isCanvasFullScreen ? "flex-col" : "flex-col xl:flex-row xl:items-start xl:justify-center"}`}
+        >
+          {/* Canvas */}
+          <div className={`w-full ${isCanvasFullScreen ? "" : "xl:max-w-[960px] mx-auto xl:mx-0"}`}>
+            <div ref={canvasExportRef} className={`relative w-full ${isCanvasFullScreen ? "min-h-[80vh]" : ""}`}>
+              <CanvasView
+                neurons={neurons}
+                edges={edges}
+                selectedNodeIds={selectedNodeIds}
+                selectedEdgeId={selectedEdgeId}
+                canvasWidth={canvasWidth}
+                canvasHeight={canvasHeight}
+                mode={mode}
+                connectSrc={connectSrc}
+                connectPoints={connectPoints}
+                groups={groups}
+                dynamicsPanels={dynamicsPanels}
+                dynamicsData={{ sim, T }}
+                showDynamicsHeaders={showDynamicsHeaders}
+                showOutputPotentials={showOutputPotentials}
+                includeColors={includeColors}
+                hideStandardWeights={hideStandardWeights}
+                stickyMultiSelect={touchMultiSelect}
+                onSelectGroup={(group, modifiers) => handleGroupPointerDown(group.id, modifiers)}
+                onNodePointerDown={handleNodePointerDown}
+                onNodeDoubleClick={openDynamicsPanelForNeuron}
+                onSelectEdge={handleEdgePointerDown}
+                onClearSelection={clearSelection}
+                onMoveNodes={moveNodes}
+                onMoveLabels={moveLabelOffsets}
+                onBeginDrag={(_ids) => beginNodeDrag()}
+                onBeginLabelDrag={(_id) => beginLabelDrag()}
+                onBeginEdgeDrag={() => beginEdgeDrag()}
+                onEndDrag={endDrag}
+                onMarqueeSelect={handleMarqueeSelect}
+                onCompressGroup={compressGroup}
+                onExpandGroup={expandGroup}
+                onMovePanel={moveDynamicsPanel}
+                onClosePanel={closeDynamicsPanel}
+                onBeginConnect={beginConnect}
+                onCompleteConnect={completeConnect}
+                onAddWaypoint={addConnectWaypoint}
+                onCancelConnect={cancelConnect}
+                onExitConnectMode={exitConnectMode}
+                activeEdgeHandle={selectedEdgeHandle}
+                onSelectEdgeHandle={(edgeId, index) => {
+                  if (edgeId === null || index === null) {
+                    setSelectedEdgeHandle(null);
+                  } else {
+                    setSelectedEdgeHandle({ edgeId, index });
+                    setActiveSelectionContext("main");
+                  }
+                }}
+                onMoveEdgePoint={updateEdgeWaypoint}
+                onInsertEdgePoint={insertEdgeWaypoint}
+                onEditEdge={setSelectedEdgeId}
+                highlightedNodeIds={highlightedNodeIds}
+                highlightedEdgeIds={highlightedEdgeIds}
+                recentNodeIds={recentNodeIds}
+                recentEdgeIds={recentEdgeIds}
+                fullWidth={isCanvasFullScreen}
+              />
             {hasAnimation && (
               <div className="pointer-events-none absolute inset-0 flex flex-col justify-end">
                 <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 sm:gap-3 px-3 pb-3">
@@ -4135,225 +5144,25 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
           <EdgeEditor edge={edges.find((e) => e.id === selectedEdgeId) || null} onChange={setWeight} onRemove={removeEdge} />
         </div>
 
-        {/* Right Panel */}
-        <div className="w-full xl:w-[360px] space-y-4 mx-auto xl:mx-0">
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">Simulation</div>
-            <div className="grid grid-cols-3 items-center gap-2">
-              <label className="col-span-1">Horizon T</label>
-              <input
-                className="col-span-2 px-2 py-1 border rounded-lg"
-                type="number"
-                min={0.1}
-                step={0.1}
-                value={T}
-                onChange={(e) => setT(Number(e.target.value))}
-              />
-
-              <label className="col-span-1">Memory h</label>
-              <div className="col-span-2 flex items-center gap-2">
-                <select
-                  className="px-2 py-1 border rounded-lg"
-                  value={hKind}
-                  onChange={(e) => setHKind(e.target.value as any)}
-                >
-                  <option value="finite">finite</option>
-                  <option value="zero">0</option>
-                  <option value="infty">∞</option>
-                </select>
-                {hKind === "finite" && (
-                  <input
-                    className="px-2 py-1 border rounded-lg w-24"
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={hVal}
-                    onChange={(e) => setHVal(Number(e.target.value))}
-                  />
-                )}
-              </div>
-
-              <div className="col-span-3 flex gap-2">
-                <button className="px-3 py-1 rounded-full border bg-black text-white" onClick={runSimulation}>
-                  Run
-                </button>
-                <button
-                  className="px-3 py-1 rounded-full border"
-                  onClick={animateButtonAction}
-                  title={animateButtonTitle}
-                >
-                  {animateButtonLabel}
-                </button>
-                {hasAnimation && (
-                  <button className="px-3 py-1 rounded-full border" onClick={stopAnimation}>
-                    {isAnimating ? "Stop" : "Hide"}
-                  </button>
-                )}
-                {/* <button className="px-3 py-1 rounded-full border" onClick={clearSimulation}>
-                  Clear
-                </button> */}
-              </div>
-            </div>
-          </div>
-
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">Canvas Layout</div>
-            <div className="grid grid-cols-3 items-center gap-2">
-              <label className="col-span-1">Width</label>
-              <input
-                className="col-span-2 px-2 py-1 border rounded-lg"
-                type="number"
-                min={MIN_CANVAS_DIMENSION}
-                step={50}
-                value={canvasWidthInput}
-                onChange={(e) => setCanvasWidthInput(e.target.value)}
-                onKeyDown={handleCanvasSizeKeyDown}
-              />
-
-              <label className="col-span-1">Height</label>
-              <input
-                className="col-span-2 px-2 py-1 border rounded-lg"
-                type="number"
-                min={MIN_CANVAS_DIMENSION}
-                step={50}
-                value={canvasHeightInput}
-                onChange={(e) => setCanvasHeightInput(e.target.value)}
-                onKeyDown={handleCanvasSizeKeyDown}
-              />
-              <button
-                type="button"
-                className="col-span-3 px-3 py-1 rounded-full border"
-                onClick={applyCanvasSize}
-                disabled={!isCanvasSizeDirty}
-              >
-                Apply
-              </button>
-            </div>
-          </div>
-
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">File I/O</div>
-            <div className="flex flex-wrap gap-2">
-              <button className="px-3 py-1 rounded-full border" onClick={exportCanvasPdf}>
-                Export Canvas as PDF
-              </button>
-              <button
-                className="px-3 py-1 rounded-full border"
-                onClick={exportAnimationPdfs}
-                disabled={!hasAnimation || isExportingAnimationPdfs}
-                title={
-                  hasAnimation
-                    ? isExportingAnimationPdfs
-                      ? "Generating PDFs for each animation step..."
-                      : "Select a folder to export a PDF for each animation frame."
-                    : "Run a spike animation to enable per-frame PDF export."
-                }
-              >
-                {isExportingAnimationPdfs ? "Exporting..." : "Export Animation PDFs"}
-              </button>
-              <button className="px-3 py-1 rounded-full border" onClick={exportState}>
-                Export JSON
-              </button>
-            
-              {/* <button className="px-3 py-1 rounded-full border" onClick={exportPdf}>
-                Export Full PDF Report
-              </button> */}
-              <button className="px-3 py-1 rounded-full border" onClick={triggerImport}>
-                Import JSON
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={onImportInputChange}
-              />
-            </div>
-            <label
-              className={`mt-2 flex items-center gap-2 text-xs text-gray-600 ${hasAnimation ? "" : "opacity-60"}`}
-              title={
-                hasAnimation
-                  ? "Toggle whether the animation counter overlay is included in PDF canvas exports."
-                  : "Run a simulation with spike animation to enable the counter overlay in PDF exports."
-              }
-            >
-              <input
-                type="checkbox"
-                className="accent-black"
-                checked={includeAnimationCounterInPdf}
-                disabled={!hasAnimation}
-                onChange={(e) => setIncludeAnimationCounterInPdf(e.target.checked)}
-              />
-              Include animation counter overlay in PDF
-            </label>
-          </div>
-              
-          {/* Input spike editors */}
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-2">
-            <div className="text-lg font-semibold">Input Spike Trains</div>
-            {neurons.filter((n) => n.role === "input").length === 0 && (
-              <div className="text-gray-500">Add an Input neuron to edit trains.</div>
-            )}
-            <div className="space-y-3 max-h-72 overflow-auto pr-1">
-              {neurons
-                .filter((n) => n.role === "input")
-                .map((n) => (
-                  <div key={n.id} className="border rounded-xl p-2">
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className="font-medium">{n.label}</div>
-                      <div className="text-xs text-gray-500">({n.id.slice(-4)})</div>
-                    </div>
-                    <label className="text-xs text-gray-600">times (s): space/comma separated</label>
-                    <textarea
-                      className="w-full mt-1 p-2 border rounded-lg font-mono text-xs"
-                      rows={2}
-                      placeholder="e.g., 0.5 1 1.5 3 4.2"
-                      value={inputText[n.id] || ""}
-                      onChange={(e) => setInputText((prev) => ({ ...prev, [n.id]: e.target.value }))}
-                    />
-                    <div className="flex items-center gap-2 mt-1">
-                      <button
-                        className="px-2 py-1 border rounded-full"
-                        onClick={() => setInputText((prev) => ({ ...prev, [n.id]: jitterPoissonText(T, 3) }))}
-                        title="Fill with a Poisson(λ=3 Hz) sample over [0,T]"
-                      >
-                        Poisson λ=3
-                      </button>
-                      <button
-                        className="px-2 py-1 border rounded-full"
-                        onClick={() => setInputText((prev) => ({ ...prev, [n.id]: integerSpikeText(T) }))}
-                        title="Fill with spikes at integer seconds up to T"
-                      >
-                        Integer times
-                      </button>
-                      <button
-                        className="px-2 py-1 border rounded-full"
-                        onClick={() => setInputText((prev) => ({ ...prev, [n.id]: "" }))}
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-
-        </div>
+        {!isCanvasFullScreen && (
+          <div className="w-full xl:w-[360px] mx-auto xl:mx-0">{controlsPanel}</div>
+        )}
         </div>
 
-              <br></br><br></br>
-        {/* Raster plot */}
-        <div className="p-3 rounded-2xl border shadow-sm bg-white">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-lg font-semibold">Spike Raster</div>
-          <div className="text-xs text-gray-500">Strict threshold {">"} 1; h = {hKind === "infty" ? "∞" : hKind === "zero" ? 0 : h.toFixed(3)}</div>
-        </div>
-        {!sim && <div className="text-gray-500 text-sm mt-2">Run the simulation to see spikes.</div>}
-        <div ref={rasterExportRef}>
-          <RasterPlot neurons={neurons} spikeTrains={sim?.spikeTrains || {}} T={T} selectedNeuronIds={selectedNodeIds} />
-          
-        </div>
-        </div>
+        {isCanvasFullScreen ? (
+          <>
+            <div className="w-full max-w-3xl mx-auto mt-4">{controlsPanel}</div>
+            <div className="mt-4">{modulesSection}</div>
+            <div className="border-t border-gray-200 my-4" />
+            <div className="mt-4">{spikeRasterSection}</div>
+          </>
+        ) : (
+          <>
+            {modulesSection}
+            <div className="border-t border-gray-200 my-4" />
+            <div className="mt-4">{spikeRasterSection}</div>
+          </>
+        )}
 
         {/* <div className="p-3 rounded-2xl border shadow-sm bg-white">
         <div className="flex items-center justify-between mb-2">
@@ -4365,219 +5174,7 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
         </div>
         </div> */}
 
-        <div className="border-t border-gray-200 my-6" />
-        <div className="space-y-4">
-          <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-lg font-semibold">Modules</div>
-              <button className="px-3 py-1 rounded-full border" onClick={createModule}>
-                + New Module
-              </button>
-            </div>
-            {modules.length === 0 ? (
-              <div className="text-gray-500 text-sm">Create a module to reuse neuron motifs on the main canvas.</div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {modules.map((module) => {
-                  const isActive = module.id === activeModuleId;
-                  return (
-                    <div
-                      key={module.id}
-                      className={`border rounded-xl p-3 flex flex-col gap-3 ${isActive ? "border-black" : "border-gray-200"}`}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="flex-1 min-w-0 space-y-2">
-                          <input
-                            className="w-full px-2 py-1 border rounded-lg"
-                            value={module.name}
-                            onChange={(e) => renameModule(module.id, e.target.value)}
-                          />
-                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
-                            <span>{module.neurons.length} neurons</span>
-                            <span>{module.edges.length} edges</span>
-                            <span>{module.inputNeuronIds.length} inputs</span>
-                            <span>{module.outputNeuronIds.length} outputs</span>
-                          </div>
-                        </div>
-                        {isActive && (
-                          <span className="shrink-0 rounded-full bg-black px-2 py-0.5 text-xs font-medium text-white">
-                            Editing
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-2 border-t pt-2">
-                        <button
-                          className={`px-3 py-1 rounded-full border ${isActive ? "bg-black text-white" : ""}`}
-                          onClick={() => openModuleEditor(module)}
-                        >
-                          {isActive ? "Open Editor" : "Edit"}
-                        </button>
-                        <button className="px-3 py-1 rounded-full border" onClick={() => instantiateModule(module)}>
-                          Place on Board
-                        </button>
-                        <button className="px-3 py-1 rounded-full border" onClick={() => deleteModuleById(module.id)}>
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {activeModuleId && (
-            <div className="p-3 rounded-2xl border shadow-sm bg-white space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-lg font-semibold">
-                  Module Editor{activeModule ? ` — ${activeModule.name}` : ""}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    className={`px-3 py-1 rounded-full border ${moduleMode === "select" ? "bg-black text-white" : ""}`}
-                    onClick={() => {
-                      setModuleMode("select");
-                      cancelModuleConnect();
-                    }}
-                  >
-                    Select
-                  </button>
-                  <button
-                    className={`px-3 py-1 rounded-full border ${moduleMode === "connect" ? "bg-black text-white" : ""}`}
-                    onClick={() => {
-                      setModuleMode("connect");
-                      setModuleConnectSrc(null);
-                      setModuleConnectPoints([]);
-                    }}
-                  >
-                    Connect
-                  </button>
-                  <button className="px-3 py-1 rounded-full border" onClick={() => openModuleEditor(null)}>
-                    Close
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("hidden")}>
-                  + Hidden
-                </button>
-                <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("input")}>
-                  + Input
-                </button>
-                <button className="px-3 py-1 rounded-full border" onClick={() => addModuleNeuron("output")}>
-                  + Output
-                </button>
-                <button
-                  className="px-3 py-1 rounded-full border"
-                  onClick={() => deleteModuleSelection()}
-                  disabled={!moduleSelectedEdgeId && moduleSelectedNodeIds.length === 0}
-                >
-                  Delete Selected
-                </button>
-              </div>
-
-              <div className="grid grid-cols-12 gap-4">
-                <div className="col-span-7 lg:col-span-8 space-y-2">
-                  <CanvasView
-                    neurons={moduleNeurons}
-                    edges={moduleEdges}
-                    selectedNodeIds={moduleSelectedNodeIds}
-                    selectedEdgeId={moduleSelectedEdgeId}
-                    canvasWidth={moduleCanvasWidth}
-                    canvasHeight={moduleCanvasHeight}
-                    mode={moduleMode}
-                    connectSrc={moduleConnectSrc}
-                    connectPoints={moduleConnectPoints}
-                    groups={[]}
-                    dynamicsPanels={[]}
-                    dynamicsData={{ sim: null, T: T }}
-                    includeColors={includeColors}
-                    stickyMultiSelect={touchMultiSelect}
-                    onSelectGroup={(group, _modifiers) => []}
-                    onNodePointerDown={handleModuleNodePointerDown}
-                    onSelectEdge={handleModuleEdgePointerDown}
-                    onClearSelection={clearModuleSelection}
-                    onMoveNodes={moveModuleNodes}
-                    onMoveLabels={moveModuleLabelOffsets}
-                    hideStandardWeights={hideStandardWeights}
-                    onBeginDrag={(_ids) => {}}
-                    onBeginLabelDrag={(_id) => {}}
-                    onBeginEdgeDrag={(_edgeId, _index) => {}}
-                    onEndDrag={() => {}}
-                    onMarqueeSelect={() => {}}
-                    onCompressGroup={() => {}}
-                    onExpandGroup={() => {}}
-                    onMovePanel={() => {}}
-                    onClosePanel={() => {}}
-                    onBeginConnect={beginModuleConnect}
-                    onCompleteConnect={completeModuleConnect}
-                    onAddWaypoint={addModuleWaypoint}
-                    onCancelConnect={cancelModuleConnect}
-                    activeEdgeHandle={moduleSelectedEdgeHandle}
-                    onSelectEdgeHandle={(edgeId, index) => {
-                      if (edgeId === null || index === null) {
-                        setModuleSelectedEdgeHandle(null);
-                      } else {
-                        setModuleSelectedEdgeHandle({ edgeId, index });
-                        setActiveSelectionContext("module");
-                      }
-                    }}
-                    onMoveEdgePoint={updateModuleEdgeWaypoint}
-                    onInsertEdgePoint={insertModuleEdgeWaypoint}
-                    onEditEdge={setModuleSelectedEdgeId}
-                    highlightedNodeIds={[]}
-                    highlightedEdgeIds={[]}
-                  />
-                  <EdgeEditor
-                    edge={moduleEdges.find((e) => e.id === moduleSelectedEdgeId) || null}
-                    onChange={setModuleWeight}
-                    onRemove={removeModuleEdge}
-                  />
-                </div>
-                <div className="col-span-5 lg:col-span-4 space-y-3">
-                  <div className="p-3 rounded-xl border bg-white space-y-2">
-                    <div className="text-lg font-semibold">Module Canvas</div>
-                    <div className="grid grid-cols-3 items-center gap-2">
-                      <label className="col-span-1">Width</label>
-                      <input
-                        className="col-span-2 px-2 py-1 border rounded-lg"
-                        type="number"
-                        min={200}
-                        step={20}
-                        value={moduleCanvasWidth}
-                        onChange={(e) => setModuleCanvasWidth(Math.max(200, Number(e.target.value)))}
-                      />
-                      <label className="col-span-1">Height</label>
-                      <input
-                        className="col-span-2 px-2 py-1 border rounded-lg"
-                        type="number"
-                        min={200}
-                        step={20}
-                        value={moduleCanvasHeight}
-                        onChange={(e) => setModuleCanvasHeight(Math.max(200, Number(e.target.value)))}
-                      />
-                    </div>
-                  </div>
-
-                  <ModuleNeuronInspector
-                    neurons={moduleNeurons}
-                    selectedIds={moduleSelectedNodeIds}
-                    inputIds={moduleInputIds}
-                    outputIds={moduleOutputIds}
-                    onLabel={setModuleLabel}
-                    onRole={setModuleRole}
-                    onInput={setModuleInput}
-                    onOutput={setModuleOutput}
-                    onLabelVisible={setModuleLabelVisibility}
-                    onLabelOffset={setModuleLabelOffset}
-                    onResetLabelOffset={resetModuleLabelOffset}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        
       </div>
     </div>
   );
@@ -4633,6 +5230,7 @@ function CanvasView({
   onExpandGroup = () => {},
   onMovePanel = () => {},
   onClosePanel = () => {},
+  fullWidth = false,
 }: {
   neurons: Neuron[];
   edges: Edge[];
@@ -4681,6 +5279,7 @@ function CanvasView({
   onExpandGroup?: (groupId: string) => void;
   onMovePanel: (panelId: string, x: number, y: number) => void;
   onClosePanel: (panelId: string) => void;
+  fullWidth?: boolean;
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [drag, setDrag] = useState<
@@ -4782,15 +5381,25 @@ function CanvasView({
     });
   }
 
-  return (
-    <div
-      className="rounded-2xl border shadow-sm bg-white select-none mx-auto w-full"
-      style={{
+  const containerStyle: React.CSSProperties = fullWidth
+    ? {
         boxSizing: "border-box",
-        maxWidth: viewWidth + CANVAS_FRAME_PADDING * 2,
         padding: CANVAS_FRAME_PADDING,
-      }}
-    >
+        width: "100vw",
+        marginLeft: "calc(50% - 50vw)",
+        marginRight: "calc(50% - 50vw)",
+      }
+    : {
+        boxSizing: "border-box",
+        padding: CANVAS_FRAME_PADDING,
+        maxWidth: viewWidth + CANVAS_FRAME_PADDING * 2,
+      };
+  const containerClass = fullWidth
+    ? "rounded-2xl border shadow-sm bg-white select-none"
+    : "rounded-2xl border shadow-sm bg-white select-none mx-auto w-full";
+
+  return (
+    <div className={containerClass} style={containerStyle}>
       <svg
         ref={svgRef}
         viewBox={`0 0 ${viewWidth} ${viewHeight}`}
@@ -5039,6 +5648,7 @@ function CanvasView({
           const isRecent = recentEdgeSet.has(e.id);
           const strokeColor = isRecent ? "#f97316" : isHighlight ? "#facc15" : baseColor;
           const strokeWidth = isRecent ? EDGE_STROKE_WIDTH + 1.4 : isHighlight ? EDGE_STROKE_WIDTH + 1.0 : isSel ? EDGE_STROKE_WIDTH + 0.6 : EDGE_STROKE_WIDTH;
+          const strokeDasharray = includeColors ? undefined : weightToDashPattern(e.weight);
           const arrowTip = pathPoints[pathPoints.length - 1];
           const arrowHitRadius = Math.max(strokeWidth * 1.4, 7);
           const labelPoint = pathMidpoint(pathPoints);
@@ -5077,6 +5687,7 @@ function CanvasView({
                 d={pathD}
                 stroke={strokeColor}
                 strokeWidth={strokeWidth}
+                strokeDasharray={strokeDasharray}
                 fill="none"
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -5962,6 +6573,14 @@ function lerpColor(from: [number, number, number], to: [number, number, number],
 function isStandardWeight(weight: number): boolean {
   const EPS = 1e-6;
   return Math.abs(weight - 1) <= EPS || Math.abs(weight - 2) <= EPS || Math.abs(weight + 2) <= EPS;
+}
+
+function weightToDashPattern(weight: number): string | undefined {
+  const EPS = 1e-6;
+  if (weight < -EPS) return "8 4";
+  if (Math.abs(weight - 1) <= EPS) return "1 8";
+  if (weight > 1 + EPS) return undefined;
+  return undefined;
 }
 
 function weightToColor(weight: number): string {
