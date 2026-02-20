@@ -59,7 +59,7 @@ declare global {
 
 type Role = "input" | "hidden" | "output";
 
-interface Neuron {
+export interface Neuron {
   id: string;
   label: string;
   role: Role;
@@ -70,7 +70,7 @@ interface Neuron {
   labelOffsetY?: number;
 }
 
-interface Edge {
+export interface Edge {
   id: string;
   sourceId: string;
   targetId: string;
@@ -156,7 +156,7 @@ function uid(prefix = "id"): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function uniqueLabel(base: string, taken: Set<string>): string {
+export function uniqueLabel(base: string, taken: Set<string>): string {
   const safeBase = base.trim() || "N";
   let attempt = safeBase;
   let counter = 2;
@@ -167,7 +167,7 @@ function uniqueLabel(base: string, taken: Set<string>): string {
   return attempt;
 }
 
-function parseTimes(text: string): number[] {
+export function parseTimes(text: string): number[] {
   // Accept comma/space/newline separated numbers
   return text
     .split(/[\,\s]+/)
@@ -178,7 +178,7 @@ function parseTimes(text: string): number[] {
     .sort((a, b) => a - b);
 }
 
-function uniqueSorted(nums: number[]): number[] {
+export function uniqueSorted(nums: number[]): number[] {
   const out: number[] = [];
   let last: number | undefined;
   for (const n of nums) {
@@ -213,7 +213,7 @@ function waitForNextFrame(): Promise<void> {
   });
 }
 
-function expDecay(delta: number, h: number): number {
+export function expDecay(delta: number, h: number): number {
   if (delta <= 0) return 1; // same-time use
   if (!Number.isFinite(h)) return 1; // h = ∞
   if (h === 0) return 0; // h = 0 and delta>0
@@ -224,17 +224,17 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function snapToGrid(value: number, gridSize = GRID_SIZE): number {
+export function snapToGrid(value: number, gridSize = GRID_SIZE): number {
   if (!Number.isFinite(value)) return 0;
   return Math.round(value / gridSize) * gridSize;
 }
 
-const NODE_RADIUS = 24;
-const EDGE_NODE_PADDING = 6;
-const EDGE_TARGET_TRIM = 1;
-const EDGE_END_CLEARANCE = 0.35;
+export const NODE_RADIUS = 24;
+export const EDGE_NODE_PADDING = 6;
+export const EDGE_TARGET_TRIM = 1;
+export const EDGE_END_CLEARANCE = 0.35;
 const EDGE_STROKE_WIDTH = 2.0;
-const GRID_SIZE = 20;
+export const GRID_SIZE = 20;
 const DEFAULT_LABEL_OFFSET_Y = 0;
 const MIN_EVENT_DELAY_MS = 200;
 const TIME_SCALE_MS = 600; // milliseconds per simulated second
@@ -255,11 +255,11 @@ const ROLE_FILL: Record<Role, string> = {
 const EDGE_GAP = NODE_RADIUS + EDGE_NODE_PADDING;
 const COMPRESSED_GROUP_FILL = "#5ae797ff";
 
-type Point = { x: number; y: number };
+export type Point = { x: number; y: number };
 
 type EdgeHandleSelection = { edgeId: string; index: number };
 
-function offsetPoint(origin: Point, target: Point, distance: number): Point {
+export function offsetPoint(origin: Point, target: Point, distance: number): Point {
   const dx = target.x - origin.x;
   const dy = target.y - origin.y;
   const len = Math.hypot(dx, dy);
@@ -272,7 +272,7 @@ function offsetPoint(origin: Point, target: Point, distance: number): Point {
   return { x: origin.x + dx * scale, y: origin.y + dy * scale };
 }
 
-function sanitizeWaypoints(points?: Array<Point>): Array<Point> {
+export function sanitizeWaypoints(points?: Array<Point>): Array<Point> {
   if (!Array.isArray(points)) return [];
   return points
     .map((pt) => {
@@ -531,7 +531,7 @@ async function readClipboardEnvelope(): Promise<RSNNClipboardEnvelope | null> {
   }
 }
 
-function buildEdgePoints(edge: Edge, source: Neuron, target: Neuron): Point[] {
+export function buildEdgePoints(edge: Edge, source: Neuron, target: Neuron): Point[] {
   const waypoints = sanitizeWaypoints(edge.points);
   const firstTarget = waypoints[0] ?? { x: target.x, y: target.y };
   const start = offsetPoint({ x: source.x, y: source.y }, firstTarget, EDGE_GAP);
@@ -541,7 +541,7 @@ function buildEdgePoints(edge: Edge, source: Neuron, target: Neuron): Point[] {
   return [start, ...waypoints, end];
 }
 
-function totalPathLength(points: Point[]): number {
+export function totalPathLength(points: Point[]): number {
   let total = 0;
   for (let i = 1; i < points.length; i++) {
     total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
@@ -549,7 +549,7 @@ function totalPathLength(points: Point[]): number {
   return total;
 }
 
-function pointAlongPath(points: Point[], t: number): Point {
+export function pointAlongPath(points: Point[], t: number): Point {
   if (!points.length) return { x: 0, y: 0 };
   if (points.length === 1) return points[0];
   const total = totalPathLength(points);
@@ -573,11 +573,11 @@ function pointAlongPath(points: Point[], t: number): Point {
   return points[points.length - 1];
 }
 
-function pathMidpoint(points: Point[]): Point {
+export function pathMidpoint(points: Point[]): Point {
   return pointAlongPath(points, 0.5);
 }
 
-function distancePointToSegment(point: Point, a: Point, b: Point): number {
+export function distancePointToSegment(point: Point, a: Point, b: Point): number {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
   const l2 = abx * abx + aby * aby;
@@ -591,7 +591,7 @@ function distancePointToSegment(point: Point, a: Point, b: Point): number {
   return Math.hypot(point.x - projX, point.y - projY);
 }
 
-function projectPointToSegment(point: Point, a: Point, b: Point): Point {
+export function projectPointToSegment(point: Point, a: Point, b: Point): Point {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
   const l2 = abx * abx + aby * aby;
@@ -601,7 +601,7 @@ function projectPointToSegment(point: Point, a: Point, b: Point): Point {
   return { x: a.x + abx * t, y: a.y + aby * t };
 }
 
-function closestPointOnPath(point: Point, pathPoints: Point[]): { point: Point; segment: number } | null {
+export function closestPointOnPath(point: Point, pathPoints: Point[]): { point: Point; segment: number } | null {
   if (pathPoints.length < 2) return null;
   let bestDistance = Number.POSITIVE_INFINITY;
   let bestPoint = pathPoints[0];
@@ -618,7 +618,7 @@ function closestPointOnPath(point: Point, pathPoints: Point[]): { point: Point; 
   return { point: bestPoint, segment: bestSegment };
 }
 
-function waypointInsertIndex(pathPoints: Point[], waypointCount: number, clickPoint: Point): number {
+export function waypointInsertIndex(pathPoints: Point[], waypointCount: number, clickPoint: Point): number {
   if (pathPoints.length < 2) return waypointCount;
   let bestSegment = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -636,7 +636,7 @@ function waypointInsertIndex(pathPoints: Point[], waypointCount: number, clickPo
 
 // ------------------------ Simulation ------------------------
 
-function simulate(
+export function simulate(
   neurons: Neuron[],
   edges: Edge[],
   h: number, // use Number.POSITIVE_INFINITY to represent ∞
@@ -827,7 +827,7 @@ function simulate(
   return { spikeTrains, finalP, potentialSeries, cascadeFrames };
 }
 
-function binaryIncludes(arr: number[], val: number): boolean {
+export function binaryIncludes(arr: number[], val: number): boolean {
   // Assume arr is sorted. Check equality within small tolerance.
   let lo = 0,
     hi = arr.length - 1;
