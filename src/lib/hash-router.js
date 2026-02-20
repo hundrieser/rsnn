@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Fragment, createElement, useEffect } from "react";
 
 function ensureHashPrefix(prefix) {
   if (typeof window === "undefined") {
@@ -23,7 +23,7 @@ export function HashRouter({ children, prefix = "#/" }) {
     return () => window.removeEventListener("hashchange", handleHashChange);
   }, [prefix]);
 
-  return children;
+  return createElement(Fragment, null, children);
 }
 
 export default HashRouter;

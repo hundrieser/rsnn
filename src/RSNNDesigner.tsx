@@ -980,6 +980,16 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
 
   const isCanvasSizeDirty = canvasWidthInput !== canvasWidthString || canvasHeightInput !== canvasHeightString;
 
+  const cancelConnect = useCallback(() => {
+    setConnectSrc(null);
+    setConnectPoints([]);
+  }, []);
+
+  const cancelModuleConnect = useCallback(() => {
+    setModuleConnectSrc(null);
+    setModuleConnectPoints([]);
+  }, []);
+
   // Ensure inputText has entries for input neurons (and only them)
   useEffect(() => {
     setInputText((prev) => {
@@ -1718,11 +1728,6 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     setModuleConnectPoints((prev) => [...prev, { x, y }]);
   }
 
-  function cancelModuleConnect() {
-    setModuleConnectSrc(null);
-    setModuleConnectPoints([]);
-  }
-
   function moveModuleNodes(updates: Array<{ id: string; x: number; y: number }>) {
     if (!updates.length) return;
     const minX = NODE_RADIUS;
@@ -2438,11 +2443,6 @@ export default function RSNNDesigner({ isDarkMode = false, onToggleTheme }: RSNN
     const x = clamp(snapToGrid(pt.x), boardMinX, boardMaxX);
     const y = clamp(snapToGrid(pt.y), boardMinY, boardMaxY);
     setConnectPoints((prev) => [...prev, { x, y }]);
-  }
-
-  function cancelConnect() {
-    setConnectSrc(null);
-    setConnectPoints([]);
   }
 
   function exitConnectMode() {
